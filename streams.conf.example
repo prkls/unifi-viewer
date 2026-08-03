@@ -1,0 +1,20 @@
+# Copy to streams.conf, or use Camera Settings in the app's right-click menu.
+#
+# One feed per line:
+#
+#     Name = URL
+#
+# The name is whatever you want to call the camera; it appears in the
+# right-click menu. Order decides the hotkey: the first line is 1, the ninth is
+# 9, the tenth is 0. Ten feeds maximum. Anything after that is ignored.
+#
+# To find the URLs in Protect: click the camera -> Settings -> Share Livestream
+# -> enable Secure RTSPS Output. A link then appears under each resolution.
+# Paste them exactly as shown; they work as-is, with no need to rewrite them to
+# port 7447. See the README.
+#
+# A camera's quality tiers are separate streams, so you can mix cameras and
+# qualities however you like:
+
+Front Door = rtsps://192.168.0.1:7441/REPLACE_WITH_STREAM_ID?enableSrtp
+Driveway   = rtsps://192.168.0.1:7441/REPLACE_WITH_STREAM_ID?enableSrtp

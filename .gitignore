@@ -1,0 +1,13 @@
+# Real stream IDs. The ID is the only credential on these endpoints.
+streams.conf
+
+# Built by make-app.sh — generated, not source. Contains a copy of the mpv binary.
+UniFi Viewer.app/
+*.iconset/
+*.icns
+
+.DS_Store
+
+# Python bytecode from running the icon generator
+__pycache__/
+*.pyc
