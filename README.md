@@ -105,9 +105,9 @@ If the `rtsps` endpoint itself ever breaks, the other escape hatch is
   with a portrait 1920x2560 doorbell works, and the window changes shape to suit. Anything
   larger than the display is capped by `--autofit-larger=100%x100%` to whichever screen the
   window is on. Only the cap uses `--autofit-larger`; plain `--autofit` forces one size on
-  every feed, which is what used to pin everything to 1600x450 and upscale smaller streams.
+  every feed.
 - **Switching dims the picture** and names the incoming feed until frames arrive. The RTSP
-  handshake takes 8–10s, and without that the window looks frozen rather than busy. It
+  handshake can take several seconds, and without that the window looks frozen rather than busy. It
   reappears on a reconnect too.
 - The **right-click menu** is built by `tools/menu.lua` writing mpv's `menu-data` property.
   mpv 0.41 has that property but not the `menu.conf` file support that landed after it, so
