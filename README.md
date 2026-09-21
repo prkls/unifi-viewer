@@ -80,16 +80,16 @@ screen had saved. It works while the viewer has focus, like the other keys. It r
 the viewer rather than moving the window, so the picture reconnects: mpv 0.41 puts a
 window moved while open in the wrong place on any display but the main one.
 
-The menu bar button follows the window every 2 seconds while the viewer is open, and not
-at all while it is closed. A move is only saved when the window's size did not change,
+The menu bar button follows the window four times a second while the viewer is open, and
+not at all while it is closed. Each look costs under a millisecond. Closing the viewer,
+however it is closed, saves anything changed since the last look. A move is only saved when the window's size did not change,
 since mpv re-centres the window itself when a feed of another size opens. A saved
 position that no longer fits the screen, after a resolution change for instance, is
 ignored and the window opens centred.
 
-On a MacBook display with a notch, mpv measures the usable area 2 points lower than macOS
-does. Positions are measured against where mpv really put the window rather than
-converted from macOS's figures, which otherwise moved the window down 2 points on every
-reopen.
+Positions are measured from the screen's usable area as an app sees it. On a MacBook
+display with a notch, apps get a menu bar 2 points taller than a command-line process does,
+and mpv places windows by the app's figure.
 
 ## Keyboard shortcut
 
