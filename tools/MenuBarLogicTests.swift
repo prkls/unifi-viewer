@@ -286,58 +286,91 @@ enum MenuBarLogicTests {
 
         // --- windowEvents -------------------------------------------------------
 
-        let log = "1 scale 0.75\n2 reset\n3 scale 0.5\n"
-        assertEq("all events read", [WindowEvent.scale(0.75), .reset, .scale(0.5)], windowEvents(log, after: 0).events)
-        assertEq("last sequence number", 3, windowEvents(log, after: 0).last)
-        assertEq("only events not yet seen", [WindowEvent.scale(0.5)], windowEvents(log, after: 2).events)
-        assertEq("nothing new", [WindowEvent](), windowEvents(log, after: 3).events)
-        assertEq("nothing new keeps the count", 3, windowEvents(log, after: 3).last)
+        let log = "1 video 7680 2160\n2 reset\n3 feed 2\n4 video 1920 2560\n"
+        assertEq("all events read", [WindowEvent.video(7680, 2160), .reset, .feed(2), .video(1920, 2560)],
+                 windowEvents(log, after: 0).events)
+        assertEq("last sequence number", 4, windowEvents(log, after: 0).last)
+        assertEq("only events not yet seen", [WindowEvent.video(1920, 2560)], windowEvents(log, after: 3).events)
+        assertEq("nothing new", [WindowEvent](), windowEvents(log, after: 4).events)
+        assertEq("nothing new keeps the count", 4, windowEvents(log, after: 4).last)
         assertEq("garbled lines skipped", [WindowEvent.reset],
-                 windowEvents("x scale 1\n1 scale\n2 scale -1\n3 reset\n4 wobble\n5 feed x\n", after: 0).events)
-        assertEq("feed switches read", [WindowEvent.feed(2), .scale(0.5)],
-                 windowEvents("1 feed 2\n2 scale 0.5\n", after: 0).events)
+                 windowEvents("x video 1 1\n1 video 7680\n2 video 0 5\n3 reset\n4 wobble\n5 feed x\n", after: 0).events)
         assertEq("empty file", [WindowEvent](), windowEvents("", after: 0).events)
+
+        // --- expectedSize and resizedScale ------------------------------------
+
+        let driveway = CGSize(width: 7680, height: 2160)
+        let door = CGSize(width: 1920, height: 2560)
+        // Measured on mpv 0.41: Driveway at scale 1 is fitted to each screen.
+        assertEq("Driveway at 1 on the Studio Display: fitted to its width",
+                 CGSize(width: 3200, height: 900),
+                 expectedSize(video: driveway, scale: nil, visible: studioVisible, backing: 2))
+        assertEq("Driveway at 1 on the built-in: fitted to its width",
+                 CGSize(width: 1800, height: 506.25),
+                 expectedSize(video: driveway, scale: 1, visible: builtinVisible, backing: 2))
+        // Measured: scale 0.24 put Driveway at 922x259 on the built-in.
+        assertEq("Driveway at 0.24: its own size, not fitted",
+                 CGSize(width: 7680 * 0.24 / 2, height: 2160 * 0.24 / 2),
+                 expectedSize(video: driveway, scale: 0.24, visible: builtinVisible, backing: 2))
+        // Measured: Door at scale 0.25 came out 240x320.
+        assertEq("Door at 0.25", CGSize(width: 240, height: 320),
+                 expectedSize(video: door, scale: 0.25, visible: builtinVisible, backing: 2))
+        assertEq("Door at 1 on the built-in: fitted to its height",
+                 CGSize(width: 846.75, height: 1129),
+                 expectedSize(video: door, scale: 1, visible: builtinVisible, backing: 2))
+
+        assertEq("as mpv made it: not resized", nil,
+                 resizedScale(window: CGRect(x: 0, y: 466, width: 3200, height: 900), video: driveway,
+                              scale: nil, visible: studioVisible, backing: 2))
+        assertEq("rounded to whole points by mpv: not resized", nil,
+                 resizedScale(window: CGRect(x: 699, y: 2152, width: 1800, height: 506), video: driveway,
+                              scale: 1, visible: builtinVisible, backing: 2))
+        assertEq("scale kept across a feed switch: not resized", nil,
+                 resizedScale(window: CGRect(x: 1494, y: 1960, width: 240, height: 320), video: door,
+                              scale: 0.25, visible: builtinVisible, backing: 2))
+        // Measured: the resize the settling period lost, 1220 wide to 1418.
+        assertEq("resized: the new scale, from its width", 1418.0 * 2 / 7680,
+                 resizedScale(window: CGRect(x: 1524, y: 605, width: 1418, height: 399), video: driveway,
+                              scale: 0.3177, visible: studioVisible, backing: 2))
+        assertEq("a fitted window shrunk by hand: resized", 3000.0 * 2 / 7680,
+                 resizedScale(window: CGRect(x: 100, y: 466, width: 3000, height: 844), video: driveway,
+                              scale: nil, visible: studioVisible, backing: 2))
+        // Measured: dragged from the Studio Display to the built-in at 0.625,
+        // Driveway was fitted to the built-in at 1799x506.
+        assertEq("fitted on arriving at a smaller screen: not resized", nil,
+                 resizedScale(window: CGRect(x: 300, y: 1900, width: 1799, height: 506), video: driveway,
+                              scale: 0.625, visible: builtinVisible, backing: 2))
+
+        assertEq("latest video report wins", CGSize(width: 1920, height: 2560),
+                 latestVideo([.video(7680, 2160), .feed(2), .video(1920, 2560)], else: nil))
+        assertEq("no video report keeps what was known", driveway,
+                 latestVideo([.feed(2)], else: driveway))
 
         // --- track --------------------------------------------------------------
 
         let here = CGPoint(x: 1942, y: 0)
         let earlier = Placement(offset: CGPoint(x: 1542, y: 400), scale: 0.1638)
+        func look(_ events: [WindowEvent] = [], moved: Bool = false, resizedTo: Double? = nil,
+                  saved: Placement = earlier, sessionScale: Double? = 0.1638) -> TrackOutcome {
+            return track(saved: saved, events: events, moved: moved, resizedTo: resizedTo,
+                         offset: here, sessionScale: sessionScale)
+        }
 
-        let still = track(saved: earlier, events: [], moved: false, offset: here, sessionScale: 0.1638)
-        assertEq("nothing happened: nothing changes", false, still.changed)
-        assertEq("nothing happened: placement kept", earlier, still.placement)
-
-        let dragged = track(saved: earlier, events: [], moved: true, offset: here, sessionScale: 0.1638)
-        assertEq("drag: new position, same scale", Placement(offset: here, scale: 0.1638), dragged.placement)
-        assertEq("drag: changed", true, dragged.changed)
-
-        let arrived = track(saved: Placement(), events: [], moved: true, offset: here, sessionScale: 0.5212)
+        assertEq("nothing happened: nothing changes", false, look().changed)
+        assertEq("nothing happened: placement kept", earlier, look().placement)
+        assertEq("drag: new position, same scale", Placement(offset: here, scale: 0.1638), look(moved: true).placement)
         assertEq("dragged in from another screen: keeps the size it had",
-                 Placement(offset: here, scale: 0.5212), arrived.placement)
-
-        let resized = track(saved: earlier, events: [.scale(0.3)], moved: false, offset: here, sessionScale: 0.1638)
-        assertEq("resize: new scale, corner where it is now", Placement(offset: here, scale: 0.3), resized.placement)
-        assertEq("resize: the session's scale follows", 0.3, resized.sessionScale)
-
-        let resizedThenDragged = track(saved: earlier, events: [.scale(0.3)], moved: true, offset: here, sessionScale: 0.1638)
+                 Placement(offset: here, scale: 0.5212),
+                 look(moved: true, saved: Placement(), sessionScale: 0.5212).placement)
+        assertEq("resize: new scale, corner where it is now",
+                 Placement(offset: here, scale: 0.3), look(resizedTo: 0.3).placement)
+        assertEq("resize: the session's scale follows", 0.3, look(resizedTo: 0.3).sessionScale)
         assertEq("resize and drag in one look: both kept",
-                 Placement(offset: here, scale: 0.3), resizedThenDragged.placement)
-
-        let reset = track(saved: earlier, events: [.reset], moved: true, offset: here, sessionScale: 0.1638)
-        assertEq("reset: back to default", Placement(), reset.placement)
-        assertEq("reset: the restart's move is not a drag", true, reset.placement.isDefault)
-        assertEq("reset: reported", true, reset.wasReset)
-        assertEq("reset: session scale cleared", nil, reset.sessionScale)
-
-        let resetThenResized = track(saved: earlier, events: [.reset, .scale(0.4)], moved: false, offset: here, sessionScale: 0.1638)
-        assertEq("reset, then a resize: the resize wins",
-                 Placement(offset: here, scale: 0.4), resetThenResized.placement)
-
-        let resizedThenReset = track(saved: earlier, events: [.scale(0.4), .reset], moved: false, offset: here, sessionScale: 0.1638)
-        assertEq("resize, then a reset: the reset wins", Placement(), resizedThenReset.placement)
-
-        let fed = track(saved: earlier, events: [.feed(2)], moved: false, offset: here, sessionScale: 0.1638)
-        assertEq("a feed switch changes nothing saved", false, fed.changed)
+                 Placement(offset: here, scale: 0.3), look(moved: true, resizedTo: 0.3).placement)
+        assertEq("reset: back to default", Placement(), look([.reset], moved: true, resizedTo: 0.3).placement)
+        assertEq("reset: reported", true, look([.reset]).wasReset)
+        assertEq("reset: session scale cleared", nil, look([.reset]).sessionScale)
+        assertEq("a feed switch changes nothing saved", false, look([.feed(2), .video(1920, 2560)]).changed)
 
         // --- trimmedLog -----------------------------------------------------------
 
