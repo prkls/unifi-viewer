@@ -182,6 +182,38 @@ RTSP_MODE=sideways
 assert_fails "unknown RTSP_MODE rejected" feeds_load "$conf"
 RTSP_MODE=auto
 
+# --- resume_index ----------------------------------------------------------
+
+assert_eq "resumes the feed last watched"   "3" "$(resume_index 3 4)"
+assert_eq "resumes the last feed configured" "4" "$(resume_index 4 4)"
+assert_eq "saved feed since removed: first"  "1" "$(resume_index 5 4)"
+assert_eq "nothing saved: first"             "1" "$(resume_index '' 4)"
+assert_eq "junk saved: first"                "1" "$(resume_index 'abc' 4)"
+assert_eq "zero saved: first"                "1" "$(resume_index 0 4)"
+assert_eq "tenth feed resumes"               "10" "$(resume_index 10 10)"
+
+# --- menu bar logic (Swift) ------------------------------------------------
+# Compiled and run here so one command covers everything. Skipped, and said
+# so, without swiftc: the app then builds without the menu bar button anyway.
+
+if command -v swiftc >/dev/null 2>&1; then
+    swift_bin=$(mktemp)
+    TMPFILES="$TMPFILES $swift_bin"
+    if swiftc -parse-as-library tools/MenuBarLogic.swift tools/MenuBarLogicTests.swift \
+            -o "$swift_bin" 2>&1; then
+        swift_out=$("$swift_bin")
+        printf '%s\n' "$swift_out" | grep -v ' passed, ' || true
+        summary=$(printf '%s\n' "$swift_out" | tail -1)
+        pass=$((pass + ${summary%% passed*}))
+        fail=$((fail + $(printf '%s' "$summary" | sed 's/.*passed, \([0-9]*\) failed/\1/')))
+    else
+        fail=$((fail + 1))
+        echo "FAIL: menu bar logic tests did not compile"
+    fi
+else
+    echo "skipped: menu bar logic tests (swiftc not found)"
+fi
+
 # --- summary ---------------------------------------------------------------
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
