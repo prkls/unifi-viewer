@@ -102,7 +102,7 @@ chmod +x "$APP/Contents/MacOS/launch-viewer"
 if command -v swiftc >/dev/null 2>&1 \
     && echo "compiling menu bar button..." \
     && swiftc -O -parse-as-library "$REPO/tools/MenuBarLogic.swift" "$REPO/tools/Shortcut.swift" \
-        "$REPO/tools/MenuBar.swift" \
+        "$REPO/tools/Placement.swift" "$REPO/tools/MenuBar.swift" \
         -o "$APP/Contents/MacOS/unifi-viewer"; then
     :
 else

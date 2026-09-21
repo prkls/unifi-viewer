@@ -18,10 +18,16 @@
 // window when view.sh opens it — so one signal to the group stops all of it,
 // whatever it happens to be doing at the time.
 //
-// The decisions live in MenuBarLogic.swift and Shortcut.swift, which are tested
-// on their own. Build:
+// Each screen remembers where you last put the window on it and how large you
+// made it (see Placement.swift). The viewer opens with that, through a small
+// file view.sh reads each time it starts mpv; a screen you have not changed
+// anything on gets mpv's default, each feed at its own size, centred.
 //
-//   swiftc -O -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/MenuBar.swift
+// The decisions live in MenuBarLogic.swift, Shortcut.swift and Placement.swift,
+// which are tested on their own. Build:
+//
+//   swiftc -O -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift \
+//       tools/Placement.swift tools/MenuBar.swift
 
 import AppKit
 import Carbon.HIToolbox
@@ -29,19 +35,32 @@ import Carbon.HIToolbox
 // Where the viewer was last seen, by display name, so the shortcut can open it
 // there again — also after the app has been quit and reopened.
 let lastScreenDefaultsKey = "lastScreen"
+// Screen name -> Placement.encoded, for every screen you have changed.
+let placementsDefaultsKey = "placements"
+
+// Shared with view.sh and menu.lua, which find them the same way.
+let cacheDir = (ProcessInfo.processInfo.environment["XDG_CACHE_HOME"] ?? NSHomeDirectory() + "/.cache")
+    + "/unifi-viewer"
+let placementFile = cacheDir + "/placement"   // written here, read by view.sh
+let windowEventsFile = cacheDir + "/window"   // written by menu.lua, read here
 
 struct Screen {
-    let name: String     // what mpv's --screen-name matches
-    let frame: CGRect    // Cocoa coordinates, as NSEvent.mouseLocation uses
-    let bounds: CGRect   // Quartz coordinates, as CGWindowList uses
+    let name: String      // what mpv's --screen-name matches
+    let frame: CGRect     // Cocoa coordinates, as NSEvent.mouseLocation uses
+    let bounds: CGRect    // Quartz coordinates, as CGWindowList uses
+    let visible: CGRect   // the part below the menu bar, in Quartz coordinates
+    let backing: CGFloat  // pixels per point: 2 on Retina
 }
 
 func currentScreens() -> [Screen] {
+    let mainHeight = NSScreen.screens.first?.frame.height ?? 0
     return NSScreen.screens.map { screen in
         let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
         return Screen(name: screen.localizedName,
                       frame: screen.frame,
-                      bounds: CGDisplayBounds(number?.uint32Value ?? 0))
+                      bounds: CGDisplayBounds(number?.uint32Value ?? 0),
+                      visible: quartzRect(fromCocoa: screen.visibleFrame, mainHeight: mainHeight),
+                      backing: screen.backingScaleFactor)
     }
 }
 
@@ -109,7 +128,14 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     var hotKey: EventHotKeyRef?
     var shortcutWorks = false
     var pausedBy: Set<pid_t> = []     // settings windows recording a shortcut
-    var tracker: Timer?               // notes the viewer's screen while it is open
+    var tracker: Timer?               // follows the viewer's window while it is open
+
+    // About the window of the viewer now open.
+    var calibration: (screen: String, requested: CGPoint, observed: CGPoint?)?
+    var sessionScale: Double?         // the scale it is at, nil for mpv's own
+    var previousFrame: CGRect?        // where it was at the last look
+    var ignoreMovesUntil = Date.distantPast
+    var seenEvents = 0                // menu.lua lines already acted on
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -124,15 +150,14 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         installShortcutHandler()
         registerShortcut()
         listenToSettings()
-        // Opening the app is asking to see the cameras, as it was before there
-        // was a menu bar button.
-        openViewer(on: pointerScreen())
+        // Opening the app is asking to see the cameras, where you last had them.
+        openViewer(on: lastScreen() ?? pointerScreen())
     }
 
     // Double-clicking the app again while it runs in the menu bar.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if viewer == nil && settings == nil {
-            openViewer(on: pointerScreen())
+            openViewer(on: lastScreen() ?? pointerScreen())
         }
         return false
     }
@@ -236,21 +261,49 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             .map { screens[$0] }
     }
 
+    func lastScreen() -> Screen? {
+        let screens = currentScreens()
+        return screenIndex(named: UserDefaults.standard.string(forKey: lastScreenDefaultsKey),
+                           in: screens.map { $0.name }).map { screens[$0] }
+    }
+
     func openViewer(on screen: Screen?) {
         guard viewer == nil else { return }
-        guard let pid = spawnGroup(launcher, env: ["VIEW_SCREEN": screen?.name ?? ""]) else { return }
+
+        var placement = Placement()
+        if let screen = screen {
+            placement = savedPlacement(screen.name)
+            // A resolution change or a smaller display can leave a saved corner
+            // off the edge; centre instead.
+            if let offset = placement.offset,
+               !offsetFits(offset, visible: screen.visible, backing: screen.backing) {
+                placement.offset = nil
+            }
+        }
+        try? FileManager.default.removeItem(atPath: windowEventsFile)
+        seenEvents = 0
+        writePlacementFile(screen?.name, placement)
+        calibration = screen.flatMap { s in placement.offset.map { (s.name, $0, nil) } }
+        sessionScale = placement.scale
+        previousFrame = nil
+        ignoreMovesUntil = .distantPast
+
+        guard let pid = spawnGroup(launcher) else { return }
         viewer = pid
         if let name = screen?.name { remember(name) }
-        // Follows the window if it is dragged to another screen. Only runs while
-        // the viewer is open, so a closed viewer still costs nothing.
+        // Follows the window while the viewer is open, and only then, so a
+        // closed viewer still costs nothing.
         tracker = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            self.rememberViewerScreen()
+            self.trackViewer()
         }
         handOver(to: pid)
         watch(pid) {
             self.tracker?.invalidate()
             self.tracker = nil
             self.viewer = nil
+            // Nothing left to place; a later run from a terminal gets defaults.
+            try? FileManager.default.removeItem(atPath: placementFile)
+            try? FileManager.default.removeItem(atPath: windowEventsFile)
             let next = self.afterViewerExit
             self.afterViewerExit = nil
             next?()
@@ -265,7 +318,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             return
         }
         afterViewerExit = then
-        rememberViewerScreen()
+        trackViewer()
         kill(-pid, SIGTERM)
         // mpv exits within a fraction of a second on SIGTERM. If anything in the
         // group ignores it, do not let a stuck process block the next open.
@@ -356,10 +409,103 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         }
     }
 
-    func rememberViewerScreen() {
+    // --- placement ------------------------------------------------------------
+
+    func savedPlacements() -> [String: String] {
+        return UserDefaults.standard.dictionary(forKey: placementsDefaultsKey) as? [String: String] ?? [:]
+    }
+
+    func savedPlacement(_ screenName: String) -> Placement {
+        return savedPlacements()[screenName].flatMap { Placement(encoded: $0) } ?? Placement()
+    }
+
+    // A default placement is removed rather than stored: nothing saved for a
+    // screen is what "you have not changed anything here" means.
+    func save(_ placement: Placement, for screenName: String) {
+        var all = savedPlacements()
+        all[screenName] = placement.isDefault ? nil : placement.encoded
+        UserDefaults.standard.set(all, forKey: placementsDefaultsKey)
+    }
+
+    // What view.sh gives mpv the next time it starts: now, and after a restart
+    // for the settings window or a reset. No screen means no file, and mpv's
+    // defaults.
+    func writePlacementFile(_ screenName: String?, _ placement: Placement) {
+        guard let screenName = screenName else {
+            try? FileManager.default.removeItem(atPath: placementFile)
+            return
+        }
+        var text = "screen=\(screenName)\n"
+        if let scale = placement.scale { text += String(format: "scale=%.4f\n", scale) }
+        let geometry = geometryArgument(placement)
+        if !geometry.isEmpty { text += "geometry=\(geometry)\n" }
+        try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+        try? text.write(toFile: placementFile, atomically: true, encoding: .utf8)
+    }
+
+    func offset(of window: CGRect, on screen: Screen) -> CGPoint {
+        var pair: Calibration? = nil
+        if let c = calibration, c.screen == screen.name, let observed = c.observed {
+            pair = Calibration(requested: c.requested, observed: observed)
+        }
+        return geometryOffset(window: window, visible: screen.visible, backing: screen.backing,
+                              calibration: pair)
+    }
+
+    // Every 2 seconds while the viewer is open, and once more as it closes:
+    // which screen the window is on, and whether you moved or resized it.
+    func trackViewer() {
+        guard let frame = viewerWindow() else { return }
         let screens = currentScreens()
-        if let i = viewerWindow().flatMap({ screenIndex(forWindow: $0, in: screens.map { $0.bounds }) }) {
-            remember(screens[i].name)
+        guard let i = screenIndex(forWindow: frame, in: screens.map { $0.bounds }) else { return }
+        let screen = screens[i]
+        remember(screen.name)
+
+        // The first sight of a window opened at a saved position: where mpv
+        // really put it, for measuring every later position against.
+        if let c = calibration, c.screen == screen.name, c.observed == nil {
+            calibration = (c.screen, c.requested, frame.origin)
+        }
+
+        var placement = savedPlacement(screen.name)
+        var changed = false
+
+        let text = (try? String(contentsOfFile: windowEventsFile, encoding: .utf8)) ?? ""
+        let (events, last) = windowEvents(text, after: seenEvents)
+        seenEvents = last
+        for event in events {
+            switch event {
+            case .scale(let value):
+                sessionScale = value
+                placement.scale = value
+                placement.offset = offset(of: frame, on: screen)
+                changed = true
+            case .reset:
+                // view.sh restarts mpv at its defaults. Until the new window
+                // has settled, a change of position is that, not a drag: the
+                // restart includes connecting to the camera, which occasionally
+                // takes over 30 seconds.
+                placement = Placement()
+                sessionScale = nil
+                calibration = nil
+                previousFrame = nil
+                ignoreMovesUntil = Date().addingTimeInterval(40)
+                changed = true
+            }
+        }
+
+        if Date() >= ignoreMovesUntil, let previous = previousFrame,
+           isUserMove(from: previous, to: frame) {
+            placement.offset = offset(of: frame, on: screen)
+            // Dragged here from another screen, it keeps the size it had.
+            placement.scale = sessionScale
+            changed = true
+        }
+        previousFrame = frame
+
+        if changed {
+            save(placement, for: screen.name)
+            writePlacementFile(screen.name, placement)
         }
     }
 
