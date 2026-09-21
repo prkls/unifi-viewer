@@ -178,6 +178,11 @@ enum MenuBarLogicTests {
 
         assertEq("no position: mpv's own choice", "", geometryArgument(Placement(scale: 0.5)))
         assertEq("position as --geometry", "+200+150", geometryArgument(placed))
+        // Measured: dragged part-way off the left, then reopened exactly there.
+        assertEq("off the left edge as --geometry", "+-380+570",
+                 geometryArgument(Placement(offset: CGPoint(x: -380, y: 570))))
+        assertEq("off-left position round-trips", Placement(offset: CGPoint(x: -380, y: 570), scale: 0.625),
+                 Placement(encoded: "-380 570 0.625"))
 
         // --- quartzRect ---------------------------------------------------------
 
@@ -222,8 +227,12 @@ enum MenuBarLogicTests {
                  offsetFits(CGPoint(x: 6400, y: 150), visible: studioVisible, backing: 2))
         assertEq("past the bottom of a smaller screen does not fit", false,
                  offsetFits(CGPoint(x: 200, y: 3000), visible: builtinVisible, backing: 2))
-        assertEq("negative does not fit: mpv reads it from the far edge", false,
-                 offsetFits(CGPoint(x: -10, y: 150), visible: studioVisible, backing: 2))
+        assertEq("part-way off the left fits", true,
+                 offsetFits(CGPoint(x: -380, y: 570), visible: studioVisible, backing: 2))
+        assertEq("part-way off the top fits", true,
+                 offsetFits(CGPoint(x: 200, y: -40), visible: studioVisible, backing: 2))
+        assertEq("more than half off the left does not fit", false,
+                 offsetFits(CGPoint(x: -3300, y: 570), visible: studioVisible, backing: 2))
 
         // --- isUserMove ---------------------------------------------------------
 

@@ -220,7 +220,17 @@ assert_eq "word scale refused"           "" "$(placement_field "$(fixture 'scale
 ')" scale)"
 assert_eq "two dots refused"             "" "$(placement_field "$(fixture 'scale=0.5.1
 ')" scale)"
-assert_eq "negative offset refused"      "" "$(placement_field "$(fixture 'geometry=+-20+150
+assert_eq "offset off the left kept"     "+-380+570" "$(placement_field "$(fixture 'geometry=+-380+570
+')" geometry)"
+assert_eq "offset off the top kept"      "+200+-40" "$(placement_field "$(fixture 'geometry=+200+-40
+')" geometry)"
+assert_eq "right-edge form refused"      "" "$(placement_field "$(fixture 'geometry=-20+150
+')" geometry)"
+assert_eq "double minus refused"         "" "$(placement_field "$(fixture 'geometry=+--20+150
+')" geometry)"
+assert_eq "bare minus refused"           "" "$(placement_field "$(fixture 'geometry=+-+150
+')" geometry)"
+assert_eq "three parts refused"          "" "$(placement_field "$(fixture 'geometry=+1+2+3
 ')" geometry)"
 assert_eq "size in geometry refused"     "" "$(placement_field "$(fixture 'geometry=640x360+200+150
 ')" geometry)"

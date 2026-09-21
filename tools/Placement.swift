@@ -88,16 +88,25 @@ func geometryOffset(window: CGRect, visible: CGRect, backing: CGFloat,
                    y: ((window.minY - visible.minY) * backing).rounded())
 }
 
-// Whether a saved offset still puts the window's corner on the visible area.
-// A resolution change or a smaller display can leave it off the edge; the
-// window then opens centred instead. Negative offsets are refused too: mpv
-// reads "-x" as a distance from the right edge.
+// Whether a saved offset still makes sense on this screen. A resolution change
+// or a smaller display can leave it past the far edge; the window then opens
+// centred instead.
+//
+// The corner may be off the left or top: a window as wide as the screen is
+// easily dragged part-way off it. How far is limited to half the visible area,
+// since the window's size is not known until its feed opens, and a corner far
+// off the edge could leave a small window out of sight.
 func offsetFits(_ offset: CGPoint, visible: CGRect, backing: CGFloat) -> Bool {
-    return offset.x >= 0 && offset.y >= 0 &&
-        offset.x < visible.width * backing && offset.y < visible.height * backing
+    let width = visible.width * backing
+    let height = visible.height * backing
+    return offset.x > -width / 2 && offset.x < width &&
+        offset.y > -height / 2 && offset.y < height
 }
 
-// The --geometry value for a placement, or "" for mpv's own choice.
+// The --geometry value for a placement, or "" for mpv's own choice. A corner
+// off the left or top is written "+-380", which mpv reads as 380 pixels past
+// that edge; plain "-380" would mean 380 pixels from the right (tested on
+// 0.41). macOS keeps the top below the menu bar whatever mpv asks.
 func geometryArgument(_ placement: Placement) -> String {
     guard let offset = placement.offset else { return "" }
     return "+\(Int(offset.x))+\(Int(offset.y))"
@@ -117,8 +126,9 @@ func isUserMove(from previous: CGRect, to current: CGRect) -> Bool {
 //   <seq> scale <value>   you resized the window to this scale
 //   <seq> reset           you pressed the reset shortcut
 //
-// seq counts up from 1 in each viewer session, so the menu bar button can tell
-// which lines it has already acted on.
+// seq counts up from 1 each time the viewer opens, carrying on across the
+// restart a reset causes, so the menu bar button can tell which lines it has
+// already acted on.
 enum WindowEvent: Equatable {
     case scale(Double)
     case reset

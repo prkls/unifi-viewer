@@ -150,7 +150,7 @@ resume_index() {
 # Prints nothing if the file or the key is missing, which view.sh reads as
 # "mpv's default". Values are checked here rather than trusted, since they end
 # up on mpv's command line: a scale must be a positive number, a geometry must
-# be +X+Y in whole pixels.
+# be +X+Y in whole pixels, where either may be negative as "+-380".
 placement_field() {
     [ -f "$1" ] || return 0
     _value=$(sed -n "s/^$2=//p" "$1" | tail -1)
@@ -163,12 +163,13 @@ placement_field() {
             ;;
         geometry)
             case "$_value" in
-                +[0-9]*+[0-9]*)
+                +*+*)
                     _rest="${_value#+}"
-                    case "${_rest%%+*}${_rest#*+}" in
-                        *[!0-9]*) ;;
-                        *) printf '%s' "$_value" ;;
-                    esac
+                    _x="${_rest%%+*}"
+                    _y="${_rest#*+}"
+                    case "${_x#-}" in ''|*[!0-9]*) return 0 ;; esac
+                    case "${_y#-}" in ''|*[!0-9]*) return 0 ;; esac
+                    printf '%s' "$_value"
                     ;;
             esac
             ;;
