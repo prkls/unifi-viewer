@@ -180,6 +180,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
 
     // About the window of the viewer now open.
     var sessionScale: Double?         // the scale it is at, nil for mpv's own
+    var sessionVideo: CGSize?         // the size of the feed showing, from menu.lua
     var lastSeen: (frame: CGRect, screen: Screen)?  // for the final save, once it has gone
     var mouseUpMonitor: Any?          // a look at the end of every drag or resize
     var seenEvents = 0                // menu.lua lines already acted on
@@ -339,6 +340,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         seenEvents = 0
         writePlacementFile(screen?.name, placement)
         sessionScale = placement.scale
+        sessionVideo = nil
         lastSeen = nil
 
         guard let pid = spawnGroup(launcher) else { return }
@@ -371,7 +373,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             // A resize menu.lua reported after the last look, as mpv shut down,
             // is still in the file: act on it where the window was last seen.
             if let seen = self.lastSeen {
-                self.apply(frame: seen.frame, on: seen.screen, moved: false, why: "closed")
+                self.apply(frame: seen.frame, on: seen.screen, judge: false, why: "closed")
             }
             record("closed")
             // Nothing left to place; a later run from a terminal gets defaults.
@@ -393,10 +395,15 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         afterViewerExit = then
         look("closing")
         kill(-pid, SIGTERM)
-        // mpv exits within a fraction of a second on SIGTERM. If anything in the
-        // group ignores it, do not let a stuck process block the next open.
+        // mpv exits within a fraction of a second on SIGTERM — unless it is
+        // stuck connecting to a camera, when it was seen to linger for 11
+        // seconds. view.sh goes at once either way, so whether it has gone says
+        // nothing about mpv: check the whole group, and stop whatever is left.
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            if self.viewer == pid { kill(-pid, SIGKILL) }
+            if kill(-pid, 0) == 0 {
+                record("viewer still running 3s after closing; stopping it")
+                kill(-pid, SIGKILL)
+            }
         }
     }
 
@@ -534,16 +541,19 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend],
                                                                queue: .main)
-        source.setEventHandler { self.look("report") }
+        // Only noted, not judged: a feed's size is reported as it starts
+        // showing, which can be a moment before mpv has resized the window
+        // for it, and judging then would take mpv's resize for yours.
+        source.setEventHandler { self.look("report", judge: false) }
         source.setCancelHandler { close(fd) }
         reportWatch = source
         source.resume()
     }
 
     // Which screen the window is on, and whether it has been moved or resized
-    // there. Asked on a report from menu.lua, at the end of every mouse drag,
-    // and on closing.
-    func look(_ trigger: String) {
+    // there. Asked at the end of every mouse drag, on closing, and — without
+    // judging moves or resizes — on each report from menu.lua.
+    func look(_ trigger: String, judge: Bool = true) {
         guard viewer != nil, let frame = viewerWindow() else {
             if viewer != nil { record("look (\(trigger)): no window") }
             return
@@ -552,28 +562,42 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         guard let i = screenIndex(forWindow: frame, in: screens.map { $0.bounds }) else { return }
         let screen = screens[i]
         remember(screen.name)
-        let moved = hasMoved(frame, from: placementIn(effect: screen),
-                             visible: screen.visible, backing: screen.backing)
-        record("look (\(trigger)): \(describe(frame)) on \(screen.name)\(moved ? ", moved" : "")")
         lastSeen = (frame, screen)
-        apply(frame: frame, on: screen, moved: moved, why: trigger)
+        apply(frame: frame, on: screen, judge: judge, why: trigger)
     }
 
-    // Act on menu.lua's new reports and on a drag, for a window at `frame`.
-    func apply(frame: CGRect, on screen: Screen, moved: Bool, why: String) {
+    // Act on menu.lua's new reports, and when judging, on a move or resize,
+    // for a window at `frame`.
+    func apply(frame: CGRect, on screen: Screen, judge: Bool, why: String) {
         let text = (try? String(contentsOfFile: windowEventsFile, encoding: .utf8)) ?? ""
         let (events, last) = windowEvents(text, after: seenEvents)
         seenEvents = last
         for event in events {
             switch event {
-            case .scale(let value): record("report: resized to \(value)")
+            case .video(let width, let height): record("report: feed size \(width)x\(height)")
             case .reset: record("report: reset")
             case .feed(let index): record("report: feed \(index)")
             }
         }
+        sessionVideo = latestVideo(events, else: sessionVideo)
+
+        var moved = false
+        var resizedTo: Double? = nil
+        if judge && !events.contains(.reset) {
+            moved = hasMoved(frame, from: placementIn(effect: screen),
+                             visible: screen.visible, backing: screen.backing)
+            if let video = sessionVideo {
+                resizedTo = resizedScale(window: frame, video: video, scale: sessionScale,
+                                         visible: screen.visible, backing: screen.backing)
+            }
+        }
+        var seen = "look (\(why)): \(describe(frame)) on \(screen.name)"
+        if moved { seen += ", position changed" }
+        if let scale = resizedTo { seen += ", resized to \(String(format: "%.6f", scale))" }
+        record(seen)
 
         let before = savedPlacement(screen.name)
-        let outcome = track(saved: before, events: events, moved: moved,
+        let outcome = track(saved: before, events: events, moved: moved, resizedTo: resizedTo,
                             offset: offset(of: frame, on: screen), sessionScale: sessionScale)
         sessionScale = outcome.sessionScale
         if outcome.changed && outcome.placement != before {

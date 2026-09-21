@@ -108,16 +108,20 @@ func usable(_ placement: Placement, visible: CGRect, backing: CGFloat) -> Placem
     return result
 }
 
-// Whether the window is no longer where its placement puts it — which only
-// you can have done. mpv never moves a window's corner away from a saved
-// position, even when a feed of another size opens; and a window with no
-// saved position it keeps centred, feed switches included. So the answer is
-// the same whenever the question is asked, and nothing depends on having
-// seen the window before.
+// Whether the window is no longer where its placement puts it. The answer is
+// the same whenever the question is asked, and nothing depends on having seen
+// the window before.
 //
-// "Moved" means by more than a point. A saved position above the top (see
+// mpv opens a window at its saved corner, or centred if it has none. After
+// that it keeps the window's centre when the feed changes (menu.lua clears the
+// start position so it does), so a feed of another size moves the corner. That
+// counts as a change of position too, and saving it is right: the saved corner
+// is then the corner of the feed showing, which is the feed the viewer reopens
+// with. Everything else that changes the position is you.
+//
+// "Changed" means by more than a point. A saved position above the top (see
 // geometryArgument) comes back pushed down below the menu bar, and counts as
-// moved: the position saved then is where the window really is.
+// changed: the position saved then is where the window really is.
 func hasMoved(_ window: CGRect, from placement: Placement, visible: CGRect, backing: CGFloat) -> Bool {
     if let offset = placement.offset {
         let now = geometryOffset(window: window, visible: visible, backing: backing)
@@ -158,7 +162,8 @@ func resizedScale(window: CGRect, video: CGSize, scale: Double?, visible: CGRect
 
 // What menu.lua reports, one line per event:
 //
-//   <seq> video <w> <h>   a feed of this size, in pixels, is now showing
+//   <seq> video <w> <h>   a feed of this size, in pixels, is now showing, and
+//                         mpv has sized the window for it
 //   <seq> reset           you pressed the reset shortcut
 //   <seq> feed <n>        feed n started opening; only logged, since size is
 //                         a scale and the same for every feed
@@ -240,11 +245,21 @@ func track(saved: Placement, events: [WindowEvent], moved: Bool, resizedTo: Doub
     return outcome
 }
 
-// The size of the feed showing, from the latest of menu.lua's reports.
+// The size of the feed showing, from the latest of menu.lua's reports, or nil
+// while a feed is still opening. A feed can take many seconds to show its
+// first frame, and until then the window keeps the last feed's size: judging
+// it against the new feed's size then took the old size for a resize by hand
+// (seen in the log, with a feed that took 13 seconds to connect). So a feed
+// switch forgets the size until the new feed's own report, which comes once
+// its first frame is up and mpv has sized the window for it.
 func latestVideo(_ events: [WindowEvent], else current: CGSize?) -> CGSize? {
     var video = current
-    for case .video(let width, let height) in events {
-        video = CGSize(width: width, height: height)
+    for event in events {
+        switch event {
+        case .video(let width, let height): video = CGSize(width: width, height: height)
+        case .feed: video = nil
+        case .reset: video = nil
+        }
     }
     return video
 }

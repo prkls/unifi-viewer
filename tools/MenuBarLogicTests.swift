@@ -247,7 +247,7 @@ enum MenuBarLogicTests {
         assertEq("where it was put: not moved", false,
                  hasMoved(CGRect(x: 1494, y: 1960, width: 922, height: 259), from: anchored,
                           visible: builtinVisible, backing: 2))
-        assertEq("a feed of another size keeps the corner: not moved", false,
+        assertEq("opened at its corner with another feed: not moved", false,
                  hasMoved(CGRect(x: 1494, y: 1960, width: 240, height: 320), from: anchored,
                           visible: builtinVisible, backing: 2))
         assertEq("dragged: moved", true,
@@ -343,8 +343,17 @@ enum MenuBarLogicTests {
 
         assertEq("latest video report wins", CGSize(width: 1920, height: 2560),
                  latestVideo([.video(7680, 2160), .feed(2), .video(1920, 2560)], else: nil))
-        assertEq("no video report keeps what was known", driveway,
+        assertEq("no reports: what was known is kept", driveway, latestVideo([], else: driveway))
+        assertEq("a feed switch forgets the size until the new feed shows", nil,
                  latestVideo([.feed(2)], else: driveway))
+        assertEq("a reset forgets the size too", nil, latestVideo([.reset], else: driveway))
+        // Measured: while Door was still connecting, the window kept
+        // Driveway's 629x177 and was judged against Door's size.
+        assertEq("while a feed opens there is nothing to judge against: no resize", nil,
+                 latestVideo([.feed(2)], else: driveway).flatMap {
+                     resizedScale(window: CGRect(x: 1590, y: 2062, width: 629, height: 177), video: $0,
+                                  scale: 0.1638, visible: builtinVisible, backing: 2)
+                 })
 
         // --- track --------------------------------------------------------------
 
