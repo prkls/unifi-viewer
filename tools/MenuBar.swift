@@ -131,9 +131,10 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     var tracker: Timer?               // follows the viewer's window while it is open
 
     // About the window of the viewer now open.
-    var calibration: (screen: String, requested: CGPoint, observed: CGPoint?)?
     var sessionScale: Double?         // the scale it is at, nil for mpv's own
     var previousFrame: CGRect?        // where it was at the last look
+    var lastSeen: (frame: CGRect, screen: Screen)?  // for the final save, once it has gone
+    var mouseUpMonitor: Any?          // a look at the end of every drag or resize
     var ignoreMovesUntil = Date.distantPast
     var seenEvents = 0                // menu.lua lines already acted on
 
@@ -162,7 +163,10 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         return false
     }
 
+    // Only reached directly when macOS ends the app, at logout for instance;
+    // Quit from the menu closes the viewer first. Save what the last look saw.
     func applicationWillTerminate(_ notification: Notification) {
+        trackViewer()
         [viewer, settings].compactMap { $0 }.forEach { kill(-$0, SIGTERM) }
     }
 
@@ -249,8 +253,10 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         }
     }
 
+    // Closes the viewer first and waits for it, so the final save on its way
+    // out (see openViewer) happens before the app is gone.
     @objc func quit() {
-        NSApp.terminate(nil)
+        stopViewer { NSApp.terminate(nil) }
     }
 
     // --- the viewer ---------------------------------------------------------
@@ -283,24 +289,45 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         try? FileManager.default.removeItem(atPath: windowEventsFile)
         seenEvents = 0
         writePlacementFile(screen?.name, placement)
-        calibration = screen.flatMap { s in placement.offset.map { (s.name, $0, nil) } }
         sessionScale = placement.scale
         previousFrame = nil
+        lastSeen = nil
         ignoreMovesUntil = .distantPast
 
         guard let pid = spawnGroup(launcher) else { return }
         viewer = pid
         if let name = screen?.name { remember(name) }
         // Follows the window while the viewer is open, and only then, so a
-        // closed viewer still costs nothing.
-        tracker = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+        // closed viewer still costs nothing. Four looks a second: the first
+        // sight of the window has to come before you can have grabbed it, since
+        // it is taken as where mpv put it, and anything changed after the last
+        // look is only saved on the way out. A look costs under a millisecond
+        // (0.7ms measured), against ~17% of a core for the decode itself.
+        tracker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
             self.trackViewer()
+        }
+        // Releasing the mouse ends every drag and resize, so a look right then
+        // catches the final position even if the viewer is closed a moment
+        // later, before the next timed look. Watching mouse clicks needs no
+        // Accessibility permission, unlike watching keys. The short delay lets
+        // the window settle at where the drag let go.
+        mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.trackViewer() }
         }
         handOver(to: pid)
         watch(pid) {
             self.tracker?.invalidate()
             self.tracker = nil
+            if let monitor = self.mouseUpMonitor {
+                NSEvent.removeMonitor(monitor)
+                self.mouseUpMonitor = nil
+            }
             self.viewer = nil
+            // A resize menu.lua reported after the last look, as mpv shut down,
+            // is still in the file: act on it where the window was last seen.
+            if let seen = self.lastSeen {
+                self.apply(frame: seen.frame, on: seen.screen, moved: false)
+            }
             // Nothing left to place; a later run from a terminal gets defaults.
             try? FileManager.default.removeItem(atPath: placementFile)
             try? FileManager.default.removeItem(atPath: windowEventsFile)
@@ -444,15 +471,10 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     }
 
     func offset(of window: CGRect, on screen: Screen) -> CGPoint {
-        var pair: Calibration? = nil
-        if let c = calibration, c.screen == screen.name, let observed = c.observed {
-            pair = Calibration(requested: c.requested, observed: observed)
-        }
-        return geometryOffset(window: window, visible: screen.visible, backing: screen.backing,
-                              calibration: pair)
+        return geometryOffset(window: window, visible: screen.visible, backing: screen.backing)
     }
 
-    // Every 2 seconds while the viewer is open, and once more as it closes:
+    // Four times a second while the viewer is open, and once more as it closes:
     // which screen the window is on, and whether you moved or resized it.
     func trackViewer() {
         guard let frame = viewerWindow() else { return }
@@ -461,51 +483,35 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         let screen = screens[i]
         remember(screen.name)
 
-        // The first sight of a window opened at a saved position: where mpv
-        // really put it, for measuring every later position against.
-        if let c = calibration, c.screen == screen.name, c.observed == nil {
-            calibration = (c.screen, c.requested, frame.origin)
-        }
+        // macOS animates a new window in over about a quarter of a second,
+        // growing as it goes; a change of size is never taken for a drag.
+        let moved = Date() >= ignoreMovesUntil
+            && previousFrame.map { isUserMove(from: $0, to: frame) } ?? false
+        previousFrame = frame
+        lastSeen = (frame, screen)
+        apply(frame: frame, on: screen, moved: moved)
+    }
 
-        var placement = savedPlacement(screen.name)
-        var changed = false
-
+    // Act on menu.lua's new reports and on a drag, for a window at `frame`.
+    func apply(frame: CGRect, on screen: Screen, moved: Bool) {
         let text = (try? String(contentsOfFile: windowEventsFile, encoding: .utf8)) ?? ""
         let (events, last) = windowEvents(text, after: seenEvents)
         seenEvents = last
-        for event in events {
-            switch event {
-            case .scale(let value):
-                sessionScale = value
-                placement.scale = value
-                placement.offset = offset(of: frame, on: screen)
-                changed = true
-            case .reset:
-                // view.sh restarts mpv at its defaults. Until the new window
-                // has settled, a change of position is that, not a drag: the
-                // restart includes connecting to the camera, which occasionally
-                // takes over 30 seconds.
-                placement = Placement()
-                sessionScale = nil
-                calibration = nil
-                previousFrame = nil
-                ignoreMovesUntil = Date().addingTimeInterval(40)
-                changed = true
-            }
-        }
 
-        if Date() >= ignoreMovesUntil, let previous = previousFrame,
-           isUserMove(from: previous, to: frame) {
-            placement.offset = offset(of: frame, on: screen)
-            // Dragged here from another screen, it keeps the size it had.
-            placement.scale = sessionScale
-            changed = true
+        let outcome = track(saved: savedPlacement(screen.name), events: events, moved: moved,
+                            offset: offset(of: frame, on: screen), sessionScale: sessionScale)
+        sessionScale = outcome.sessionScale
+        if outcome.wasReset {
+            // view.sh restarts mpv at its defaults. Until the new window has
+            // settled, a change of position is that, not a drag: the restart
+            // includes connecting to the camera, which occasionally takes over
+            // 30 seconds.
+            previousFrame = nil
+            ignoreMovesUntil = Date().addingTimeInterval(40)
         }
-        previousFrame = frame
-
-        if changed {
-            save(placement, for: screen.name)
-            writePlacementFile(screen.name, placement)
+        if outcome.changed {
+            save(outcome.placement, for: screen.name)
+            writePlacementFile(screen.name, outcome.placement)
         }
     }
 

@@ -149,6 +149,7 @@ local settling = true       -- mpv is still sizing the window itself
 local settled_scale = nil   -- current-window-scale once it had finished
 local settle_timer = nil
 local report_timer = nil
+local pending_scale = nil   -- the latest size of a resize not yet reported
 
 -- Numbering carries on from the lines already in the file: a reset restarts
 -- mpv, and the menu bar button skips any number it has seen before.
@@ -201,10 +202,25 @@ local function settle_after_first_frame()
     end)
 end
 
+-- Uses the size mpv last sent rather than asking again: at shutdown the window
+-- may already be gone.
+local function report_resize()
+    report_timer = nil
+    local final = pending_scale
+    if not settling and final and math.abs(final - settled_scale) >= 0.005 then
+        settled_scale = final
+        mp.set_property_number("window-scale", final)
+        report(string.format("scale %.4f", final))
+    end
+end
+
 mp.observe_property("current-window-scale", "number", function(_, scale)
     if settling or not scale or not settled_scale then
         return
     end
+    -- Kept even when back at the settled size, so a drag that ends where it
+    -- started reports nothing rather than a size from part-way through.
+    pending_scale = scale
     if math.abs(scale - settled_scale) < 0.005 then
         return
     end
@@ -212,15 +228,16 @@ mp.observe_property("current-window-scale", "number", function(_, scale)
     if report_timer then
         report_timer:kill()
     end
-    report_timer = mp.add_timeout(0.5, function()
-        report_timer = nil
-        local final = mp.get_property_number("current-window-scale")
-        if not settling and final and math.abs(final - settled_scale) >= 0.005 then
-            settled_scale = final
-            mp.set_property_number("window-scale", final)
-            report(string.format("scale %.4f", final))
-        end
-    end)
+    report_timer = mp.add_timeout(0.5, report_resize)
+end)
+
+-- Closing right after a resize must not lose it: report it now rather than
+-- when the half second would have run out.
+mp.register_event("shutdown", function()
+    if report_timer then
+        report_timer:kill()
+        report_resize()
+    end
 end)
 
 -- Back to mpv's default: each feed at its own size, centred on this screen.
