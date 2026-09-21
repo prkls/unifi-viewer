@@ -53,6 +53,13 @@ else
 fi
 
 # --- launcher -------------------------------------------------------------
+# launch-viewer starts one viewer session: view.sh with the bundle's mpv. The
+# menu bar button below runs it each time the viewer opens; without that
+# button it is the app's main program, as it always used to be.
+#
+#   launch-viewer              open the viewer (VIEW_SCREEN picks the display)
+#   launch-viewer --settings   just the settings window, for the menu bar menu
+#
 # Finder gives a launched app no terminal, so view.sh's retry messages would go
 # nowhere. Send them to a log instead.
 # MPVBUNDLE is what stops mpv replacing our Dock and App Switcher icon with its
@@ -69,19 +76,37 @@ fi
 # supply its own icon, and overwrites ours at window creation. Only set here,
 # not in view.sh: run from a terminal, mpv genuinely is unbundled.
 #
-# The log is truncated per launch rather than appended, so it always describes
-# the current session and cannot grow without bound.
-cat >"$APP/Contents/MacOS/unifi-viewer" <<EOF
+# The log is truncated each time the viewer opens rather than appended, so it
+# always describes the current session and cannot grow without bound.
+cat >"$APP/Contents/MacOS/launch-viewer" <<EOF
 #!/bin/bash
 LOG="\${XDG_CACHE_HOME:-\$HOME/.cache}/unifi-viewer"
 mkdir -p "\$LOG"
 export MPVBUNDLE=true
 DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+if [ "\${1:-}" = --settings ]; then
+    exec "\$DIR/settings" "\${STREAMS_CONF:-$REPO/streams.conf}" >>"\$LOG/app.log" 2>&1
+fi
 export MPV_BIN="\$DIR/mpv"
 [ -x "\$DIR/settings" ] && export SETTINGS_BIN="\$DIR/settings"
 exec "$REPO/view.sh" >"\$LOG/app.log" 2>&1
 EOF
-chmod +x "$APP/Contents/MacOS/unifi-viewer"
+chmod +x "$APP/Contents/MacOS/launch-viewer"
+
+# --- menu bar button ------------------------------------------------------
+# The app's main program when it compiles: it stays in the menu bar and runs
+# launch-viewer whenever the viewer opens. Without swiftc, or if it fails to
+# build, launch-viewer takes its place and the app behaves as it did before
+# the button existed: open to start, quit to stop.
+if command -v swiftc >/dev/null 2>&1 \
+    && echo "compiling menu bar button..." \
+    && swiftc -O -parse-as-library "$REPO/tools/MenuBarLogic.swift" "$REPO/tools/MenuBar.swift" \
+        -o "$APP/Contents/MacOS/unifi-viewer"; then
+    :
+else
+    echo "make-app.sh: building without the menu bar button" >&2
+    cp "$APP/Contents/MacOS/launch-viewer" "$APP/Contents/MacOS/unifi-viewer"
+fi
 
 # --- Info.plist -----------------------------------------------------------
 # Launch Services caches an app's icon against its bundle version, so a rebuild
@@ -89,9 +114,10 @@ chmod +x "$APP/Contents/MacOS/unifi-viewer"
 # "no icon yet" state, which is what a generic placeholder in Finder means.
 # A build timestamp guarantees every build looks new.
 BUILD_VERSION=$(date +%Y%m%d%H%M%S)
-# LSUIElement keeps this wrapper out of the Dock. mpv creates its own
-# NSApplication and its own Dock tile, so without it you get two icons for one
-# window. The tile you see and Cmd+Tab to is mpv's, carrying the icon below.
+# LSUIElement keeps the menu bar button (or the plain launcher) out of the
+# Dock. mpv creates its own NSApplication and its own Dock tile, so without it
+# you get two icons for one window. The tile you see and Cmd+Tab to is mpv's,
+# carrying the icon below, and it is there only while the viewer is open.
 cat >"$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
