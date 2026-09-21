@@ -176,6 +176,20 @@ placement_field() {
     esac
 }
 
+# placement_reset <file>
+#
+# Drop the scale and position from a placement file, keeping the screen, so
+# the next start is mpv's default size and position on the same display.
+placement_reset() {
+    [ -f "$1" ] || return 0
+    _screen=$(sed -n 's/^screen=//p' "$1" | tail -1)
+    if [ -n "$_screen" ]; then
+        printf 'screen=%s\n' "$_screen" >"$1"
+    else
+        : >"$1"
+    fi
+}
+
 # feeds_load <config-file>
 #
 # Read streams.conf and emit one "<index>\t<name>\t<url>" line per usable feed.

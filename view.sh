@@ -25,10 +25,15 @@ MENU_LUA="./tools/menu.lua"
 MPV_BIN="${MPV_BIN:-mpv}"
 SETTINGS_BIN="${SETTINGS_BIN:-}"
 
-# Which display to open on, by the name macOS gives it ("Studio Display"). The
-# menu bar button sets this to the screen that was clicked. Empty means mpv's
-# own choice, which is the display the pointer is on.
-VIEW_SCREEN="${VIEW_SCREEN:-}"
+# Where the window opens: which display, at what scale, and where on it. The
+# menu bar button writes this file before opening the viewer and again whenever
+# the window is moved or resized; it is read each time mpv starts, so a restart
+# after the settings window comes back where the window last was. No file, as
+# from a terminal, means mpv's defaults: the display the pointer is on, each
+# feed at its own size, centred.
+PLACEMENT="$CACHE/placement"
+# menu.lua reports resizes and resets here, for the menu bar button to keep.
+WINDOW_EVENTS="$CACHE/window"
 
 # Right-click menu text size, in points. Override per-run if it does not suit
 # your display: MENU_FONT_SIZE=22 ./view.sh
@@ -113,6 +118,8 @@ write_generated() {
     # cannot be repointed — it is hardcoded in the mpv binary.
     echo ', quit 20' >>"$GEN_CONF"
     echo 'r script-message unifi-reload' >>"$GEN_CONF"
+    # Control-Option-Command-R: mpv calls Command "Meta".
+    echo 'Ctrl+Alt+Meta+r script-message unifi-reset-window' >>"$GEN_CONF"
     echo 'q quit 5' >>"$GEN_CONF"
     # Nothing else is bound. mpv's builtin bindings are switched off entirely
     # (see --input-builtin-bindings below), so a key with no entry here does
@@ -160,9 +167,14 @@ while true; do
     has_feed "$index" || index="$start_index"
     url=$(feed_field "$index" 4)
 
+    screen=$(placement_field "$PLACEMENT" screen)
+    scale=$(placement_field "$PLACEMENT" scale)
+    geometry=$(placement_field "$PLACEMENT" geometry)
+
     started=$(date +%s)
 
-    # Window sizing: --window-scale=1 opens each stream at its own pixel size,
+    # Window sizing: --window-scale opens each stream at that fraction of its
+    # own pixel size — 1 unless you have resized the window on this screen,
     # and mpv resizes on every switch (--auto-window-resize, on by default).
     # --autofit-larger only caps, unlike --autofit, which forces one size on
     # every feed — that is what previously pinned everything to 1600x450 and
@@ -187,6 +199,11 @@ while true; do
     # change to it at runtime but does not move the window (tested on 0.41), so
     # the menu bar button moves the viewer by restarting it on the other screen.
     #
+    # --geometry is a position only, never a size: a size would force every
+    # feed into one shape. Size comes from --window-scale instead, which keeps
+    # each feed's own shape. With a position given, mpv keeps the window's
+    # top-left corner in place on a feed switch; without one it re-centres.
+    #
     # --msg-level=ffmpeg=fatal hides libavcodec's per-frame decoder chatter.
     # Joining a live HEVC stream part-way through a GOP means the first frames
     # reference a keyframe we never received, so the decoder logs "Could not
@@ -199,7 +216,7 @@ while true; do
         --input-default-bindings=no \
         --input-media-keys=no \
         --script="$MENU_LUA" \
-        --script-opts="unifi-feeds_file=$FEEDS,unifi-state_file=$STATE,context_menu-scale_with_window=no,context_menu-font_size=$MENU_FONT_SIZE" \
+        --script-opts="unifi-feeds_file=$FEEDS,unifi-state_file=$STATE,unifi-window_file=$WINDOW_EVENTS,context_menu-scale_with_window=no,context_menu-font_size=$MENU_FONT_SIZE" \
         --no-audio \
         --profile=low-latency \
         --rtsp-transport=tcp \
@@ -208,15 +225,25 @@ while true; do
         --loop-file=inf \
         --no-border \
         --osc=no \
-        --window-scale=1 \
+        --window-scale="${scale:-1}" \
         --autofit-larger=100%x100% \
-        --screen-name="$VIEW_SCREEN" \
+        --screen-name="$screen" \
+        --geometry="$geometry" \
         --ontop \
         --keep-open=no \
         --title="UniFi Viewer" \
         $term_status \
         "$url"
     rc=$?
+
+    # 21 is the reset shortcut: back to mpv's own size and position, on the
+    # same screen. menu.lua has told the menu bar button, which forgets what
+    # it saved for this screen; the file just has to agree before mpv restarts.
+    if [ "$rc" -eq 21 ]; then
+        placement_reset "$PLACEMENT"
+        backoff=2
+        continue
+    fi
 
     # 20 is the menu's "Camera Settings..." item.
     if [ "$rc" -eq 20 ]; then

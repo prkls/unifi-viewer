@@ -230,6 +230,23 @@ assert_eq "last line wins"               "+10+20" "$(placement_field "$(fixture 
 geometry=+10+20
 ')" geometry)"
 
+# --- placement_reset -------------------------------------------------------
+
+resettable=$(fixture 'screen=Built-in Retina Display
+scale=0.3120
+geometry=+200+150
+')
+placement_reset "$resettable"
+assert_eq "reset keeps the screen"    "Built-in Retina Display" "$(placement_field "$resettable" screen)"
+assert_eq "reset drops the scale"     "" "$(placement_field "$resettable" scale)"
+assert_eq "reset drops the position"  "" "$(placement_field "$resettable" geometry)"
+noscreen=$(fixture 'scale=0.5
+')
+placement_reset "$noscreen"
+assert_eq "reset with no screen empties the file" "" "$(cat "$noscreen")"
+placement_reset /nonexistent/placement
+assert_eq "reset of a missing file is harmless" "0" "$?"
+
 # --- menu bar logic (Swift) ------------------------------------------------
 # Compiled and run here so one command covers everything. Skipped, and said
 # so, without swiftc: the app then builds without the menu bar button anyway.
