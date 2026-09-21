@@ -186,13 +186,14 @@ enum MenuBarLogicTests {
 
         // --- quartzRect ---------------------------------------------------------
 
-        // visibleFrame as NSScreen reports it, below each menu bar.
+        // visibleFrame as NSScreen reports it to an app, below each menu bar.
+        // The built-in's menu bar is 40 points, since it has a notch.
         let studioVisible = quartzRect(fromCocoa: CGRect(x: 0, y: 0, width: 3200, height: 1769), mainHeight: 1800)
-        let builtinVisible = quartzRect(fromCocoa: CGRect(x: 699, y: -1169, width: 1800, height: 1131), mainHeight: 1800)
+        let builtinVisible = quartzRect(fromCocoa: CGRect(x: 699, y: -1169, width: 1800, height: 1129), mainHeight: 1800)
         assertEq("main display's visible area starts below its menu bar",
                  CGRect(x: 0, y: 31, width: 3200, height: 1769), studioVisible)
         assertEq("built-in's visible area, below the main display",
-                 CGRect(x: 699, y: 1838, width: 1800, height: 1131), builtinVisible)
+                 CGRect(x: 699, y: 1840, width: 1800, height: 1129), builtinVisible)
 
         // --- geometryOffset -----------------------------------------------------
 
@@ -201,21 +202,20 @@ enum MenuBarLogicTests {
                  CGPoint(x: 200, y: 150),
                  geometryOffset(window: CGRect(x: 100, y: 106, width: 320, height: 180),
                                 visible: studioVisible, backing: 2))
-        // Measured: +200+150 on the built-in put the corner at 799,1915 — two
-        // points lower than its visibleFrame predicts.
-        let builtinCalibration = Calibration(requested: CGPoint(x: 200, y: 150), observed: CGPoint(x: 799, y: 1915))
-        assertEq("built-in, uncalibrated: 2 points out",
-                 CGPoint(x: 200, y: 154),
-                 geometryOffset(window: CGRect(x: 799, y: 1915, width: 320, height: 180),
-                                visible: builtinVisible, backing: 2))
-        assertEq("built-in, calibrated: exact, so it cannot creep",
+        // Measured: +200+150 on the built-in put the corner at 799,1915.
+        assertEq("built-in: exact, so it cannot creep",
                  CGPoint(x: 200, y: 150),
                  geometryOffset(window: CGRect(x: 799, y: 1915, width: 320, height: 180),
-                                visible: builtinVisible, backing: 2, calibration: builtinCalibration))
-        assertEq("built-in, calibrated: a drag is measured from the pair",
-                 CGPoint(x: 300, y: 250),
-                 geometryOffset(window: CGRect(x: 849, y: 1965, width: 320, height: 180),
-                                visible: builtinVisible, backing: 2, calibration: builtinCalibration))
+                                visible: builtinVisible, backing: 2))
+        // Measured: +1590+240 on the built-in put the corner at 1494,1960.
+        assertEq("built-in: a second measured position",
+                 CGPoint(x: 1590, y: 240),
+                 geometryOffset(window: CGRect(x: 1494, y: 1960, width: 922, height: 259),
+                                visible: builtinVisible, backing: 2))
+        assertEq("at the very top: offset 0",
+                 CGPoint(x: 1350, y: 0),
+                 geometryOffset(window: CGRect(x: 1374, y: 1840, width: 922, height: 259),
+                                visible: builtinVisible, backing: 2))
 
         // --- offsetFits ---------------------------------------------------------
 
@@ -234,30 +234,159 @@ enum MenuBarLogicTests {
         assertEq("more than half off the left does not fit", false,
                  offsetFits(CGPoint(x: -3300, y: 570), visible: studioVisible, backing: 2))
 
-        // --- isUserMove ---------------------------------------------------------
+        // --- usable -------------------------------------------------------------
 
-        let before = CGRect(x: 1280, y: 736, width: 640, height: 360)
-        assertEq("dragged: same size, new place", true,
-                 isUserMove(from: before, to: CGRect(x: 1180, y: 636, width: 640, height: 360)))
-        assertEq("standing still is not a move", false, isUserMove(from: before, to: before))
-        assertEq("feed switch re-centring changes size: not a drag", false,
-                 isUserMove(from: before, to: CGRect(x: 1360, y: 596, width: 480, height: 640)))
-        assertEq("resized from the corner: not a drag", false,
-                 isUserMove(from: before, to: CGRect(x: 1280, y: 736, width: 480, height: 270)))
-        assertEq("sub-point jitter is not a move", false,
-                 isUserMove(from: before, to: CGRect(x: 1280.4, y: 736, width: 640, height: 360)))
+        assertEq("a position that fits is kept", placed, usable(placed, visible: studioVisible, backing: 2))
+        assertEq("a position past the edge is dropped, the scale kept", Placement(scale: 0.5),
+                 usable(Placement(offset: CGPoint(x: 9000, y: 150), scale: 0.5), visible: studioVisible, backing: 2))
+
+        // --- hasMoved ---------------------------------------------------------------
+
+        let anchored = Placement(offset: CGPoint(x: 1590, y: 240), scale: 0.24)
+        // Measured: +1590+240 on the built-in puts the corner at 1494,1960.
+        assertEq("where it was put: not moved", false,
+                 hasMoved(CGRect(x: 1494, y: 1960, width: 922, height: 259), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("opened at its corner with another feed: not moved", false,
+                 hasMoved(CGRect(x: 1494, y: 1960, width: 240, height: 320), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("dragged: moved", true,
+                 hasMoved(CGRect(x: 1394, y: 2060, width: 922, height: 259), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("half a point is not a move", false,
+                 hasMoved(CGRect(x: 1494.5, y: 1960, width: 922, height: 259), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        // Measured: the opening animation passes through 1501,1960 on the way.
+        assertEq("mid-animation it looks moved; the next look puts it right", true,
+                 hasMoved(CGRect(x: 1501, y: 1960, width: 908, height: 255), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("pushed below the menu bar from above the top: moved, so saved as it is", true,
+                 hasMoved(CGRect(x: 1374, y: 1840, width: 922, height: 259),
+                          from: Placement(offset: CGPoint(x: 1350, y: -4)),
+                          visible: builtinVisible, backing: 2))
+
+        // Measured defaults, centred by mpv on each screen.
+        assertEq("centred on the main display: not moved", false,
+                 hasMoved(CGRect(x: 0, y: 466, width: 3200, height: 900), from: Placement(),
+                          visible: studioVisible, backing: 2))
+        assertEq("centred on the built-in: not moved", false,
+                 hasMoved(CGRect(x: 699, y: 2152, width: 1800, height: 506), from: Placement(),
+                          visible: builtinVisible, backing: 2))
+        // The opening animation grows the window about its centre: measured on
+        // the built-in, 1501 + 908/2 and 1494 + 922/2 are both 1955.
+        assertEq("centred window mid-animation: not moved", false,
+                 hasMoved(CGRect(x: 7, y: 468, width: 3186, height: 896), from: Placement(),
+                          visible: studioVisible, backing: 2))
+        assertEq("centred window of another feed: not moved", false,
+                 hasMoved(CGRect(x: 1360, y: 596, width: 480, height: 640), from: Placement(scale: 0.5),
+                          visible: studioVisible, backing: 2))
+        assertEq("centred window dragged: moved", true,
+                 hasMoved(CGRect(x: 100, y: 466, width: 3200, height: 900), from: Placement(),
+                          visible: studioVisible, backing: 2))
 
         // --- windowEvents -------------------------------------------------------
 
-        let log = "1 scale 0.75\n2 reset\n3 scale 0.5\n"
-        assertEq("all events read", [WindowEvent.scale(0.75), .reset, .scale(0.5)], windowEvents(log, after: 0).events)
-        assertEq("last sequence number", 3, windowEvents(log, after: 0).last)
-        assertEq("only events not yet seen", [WindowEvent.scale(0.5)], windowEvents(log, after: 2).events)
-        assertEq("nothing new", [WindowEvent](), windowEvents(log, after: 3).events)
-        assertEq("nothing new keeps the count", 3, windowEvents(log, after: 3).last)
+        let log = "1 video 7680 2160\n2 reset\n3 feed 2\n4 video 1920 2560\n"
+        assertEq("all events read", [WindowEvent.video(7680, 2160), .reset, .feed(2), .video(1920, 2560)],
+                 windowEvents(log, after: 0).events)
+        assertEq("last sequence number", 4, windowEvents(log, after: 0).last)
+        assertEq("only events not yet seen", [WindowEvent.video(1920, 2560)], windowEvents(log, after: 3).events)
+        assertEq("nothing new", [WindowEvent](), windowEvents(log, after: 4).events)
+        assertEq("nothing new keeps the count", 4, windowEvents(log, after: 4).last)
         assertEq("garbled lines skipped", [WindowEvent.reset],
-                 windowEvents("x scale 1\n1 scale\n2 scale -1\n3 reset\n4 wobble\n", after: 0).events)
+                 windowEvents("x video 1 1\n1 video 7680\n2 video 0 5\n3 reset\n4 wobble\n5 feed x\n", after: 0).events)
         assertEq("empty file", [WindowEvent](), windowEvents("", after: 0).events)
+
+        // --- expectedSize and resizedScale ------------------------------------
+
+        let driveway = CGSize(width: 7680, height: 2160)
+        let door = CGSize(width: 1920, height: 2560)
+        // Measured on mpv 0.41: Driveway at scale 1 is fitted to each screen.
+        assertEq("Driveway at 1 on the Studio Display: fitted to its width",
+                 CGSize(width: 3200, height: 900),
+                 expectedSize(video: driveway, scale: nil, visible: studioVisible, backing: 2))
+        assertEq("Driveway at 1 on the built-in: fitted to its width",
+                 CGSize(width: 1800, height: 506.25),
+                 expectedSize(video: driveway, scale: 1, visible: builtinVisible, backing: 2))
+        // Measured: scale 0.24 put Driveway at 922x259 on the built-in.
+        assertEq("Driveway at 0.24: its own size, not fitted",
+                 CGSize(width: 7680 * 0.24 / 2, height: 2160 * 0.24 / 2),
+                 expectedSize(video: driveway, scale: 0.24, visible: builtinVisible, backing: 2))
+        // Measured: Door at scale 0.25 came out 240x320.
+        assertEq("Door at 0.25", CGSize(width: 240, height: 320),
+                 expectedSize(video: door, scale: 0.25, visible: builtinVisible, backing: 2))
+        assertEq("Door at 1 on the built-in: fitted to its height",
+                 CGSize(width: 846.75, height: 1129),
+                 expectedSize(video: door, scale: 1, visible: builtinVisible, backing: 2))
+
+        assertEq("as mpv made it: not resized", nil,
+                 resizedScale(window: CGRect(x: 0, y: 466, width: 3200, height: 900), video: driveway,
+                              scale: nil, visible: studioVisible, backing: 2))
+        assertEq("rounded to whole points by mpv: not resized", nil,
+                 resizedScale(window: CGRect(x: 699, y: 2152, width: 1800, height: 506), video: driveway,
+                              scale: 1, visible: builtinVisible, backing: 2))
+        assertEq("scale kept across a feed switch: not resized", nil,
+                 resizedScale(window: CGRect(x: 1494, y: 1960, width: 240, height: 320), video: door,
+                              scale: 0.25, visible: builtinVisible, backing: 2))
+        // Measured: the resize the settling period lost, 1220 wide to 1418.
+        assertEq("resized: the new scale, from its width", 1418.0 * 2 / 7680,
+                 resizedScale(window: CGRect(x: 1524, y: 605, width: 1418, height: 399), video: driveway,
+                              scale: 0.3177, visible: studioVisible, backing: 2))
+        assertEq("a fitted window shrunk by hand: resized", 3000.0 * 2 / 7680,
+                 resizedScale(window: CGRect(x: 100, y: 466, width: 3000, height: 844), video: driveway,
+                              scale: nil, visible: studioVisible, backing: 2))
+        // Measured: dragged from the Studio Display to the built-in at 0.625,
+        // Driveway was fitted to the built-in at 1799x506.
+        assertEq("fitted on arriving at a smaller screen: not resized", nil,
+                 resizedScale(window: CGRect(x: 300, y: 1900, width: 1799, height: 506), video: driveway,
+                              scale: 0.625, visible: builtinVisible, backing: 2))
+
+        assertEq("latest video report wins", CGSize(width: 1920, height: 2560),
+                 latestVideo([.video(7680, 2160), .feed(2), .video(1920, 2560)], else: nil))
+        assertEq("no reports: what was known is kept", driveway, latestVideo([], else: driveway))
+        assertEq("a feed switch forgets the size until the new feed shows", nil,
+                 latestVideo([.feed(2)], else: driveway))
+        assertEq("a reset forgets the size too", nil, latestVideo([.reset], else: driveway))
+        // Measured: while Door was still connecting, the window kept
+        // Driveway's 629x177 and was judged against Door's size.
+        assertEq("while a feed opens there is nothing to judge against: no resize", nil,
+                 latestVideo([.feed(2)], else: driveway).flatMap {
+                     resizedScale(window: CGRect(x: 1590, y: 2062, width: 629, height: 177), video: $0,
+                                  scale: 0.1638, visible: builtinVisible, backing: 2)
+                 })
+
+        // --- track --------------------------------------------------------------
+
+        let here = CGPoint(x: 1942, y: 0)
+        let earlier = Placement(offset: CGPoint(x: 1542, y: 400), scale: 0.1638)
+        func look(_ events: [WindowEvent] = [], moved: Bool = false, resizedTo: Double? = nil,
+                  saved: Placement = earlier, sessionScale: Double? = 0.1638) -> TrackOutcome {
+            return track(saved: saved, events: events, moved: moved, resizedTo: resizedTo,
+                         offset: here, sessionScale: sessionScale)
+        }
+
+        assertEq("nothing happened: nothing changes", false, look().changed)
+        assertEq("nothing happened: placement kept", earlier, look().placement)
+        assertEq("drag: new position, same scale", Placement(offset: here, scale: 0.1638), look(moved: true).placement)
+        assertEq("dragged in from another screen: keeps the size it had",
+                 Placement(offset: here, scale: 0.5212),
+                 look(moved: true, saved: Placement(), sessionScale: 0.5212).placement)
+        assertEq("resize: new scale, corner where it is now",
+                 Placement(offset: here, scale: 0.3), look(resizedTo: 0.3).placement)
+        assertEq("resize: the session's scale follows", 0.3, look(resizedTo: 0.3).sessionScale)
+        assertEq("resize and drag in one look: both kept",
+                 Placement(offset: here, scale: 0.3), look(moved: true, resizedTo: 0.3).placement)
+        assertEq("reset: back to default", Placement(), look([.reset], moved: true, resizedTo: 0.3).placement)
+        assertEq("reset: reported", true, look([.reset]).wasReset)
+        assertEq("reset: session scale cleared", nil, look([.reset]).sessionScale)
+        assertEq("a feed switch changes nothing saved", false, look([.feed(2), .video(1920, 2560)]).changed)
+
+        // --- trimmedLog -----------------------------------------------------------
+
+        assertEq("short log kept whole", "a\nb\n", trimmedLog("a\nb\n", keeping: 3))
+        assertEq("long log keeps its last lines", "c\nd\ne\n", trimmedLog("a\nb\nc\nd\ne\n", keeping: 3))
+        assertEq("exactly at the limit: unchanged", "a\nb\nc\n", trimmedLog("a\nb\nc\n", keeping: 3))
+        assertEq("empty log", "", trimmedLog("", keeping: 3))
 
         print("\(pass) passed, \(fail) failed")
         if fail > 0 { exit(1) }

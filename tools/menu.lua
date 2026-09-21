@@ -8,13 +8,14 @@
 -- Feeds come from a file written by view.sh rather than being parsed here, so
 -- lib.sh stays the single source of truth for config and URL handling.
 --
---   --script-opts=unifi-feeds_file=<path>,unifi-state_file=<path>,unifi-window_file=<path>
+--   --script-opts=unifi-feeds_file=<path>,unifi-state_file=<path>,
+--                 unifi-window_file=<path>,unifi-placement_file=<path>
 
 local mp = require "mp"
 local assdraw = require "mp.assdraw"
 local options = require "mp.options"
 
-local opts = { feeds_file = "", state_file = "", window_file = "" }
+local opts = { feeds_file = "", state_file = "", window_file = "", placement_file = "" }
 options.read_options(opts, "unifi")
 
 local feeds = {}      -- array of { index, key, name, url }
@@ -135,24 +136,19 @@ end
 
 -- Window size ---------------------------------------------------------------
 --
--- mpv sizes the window itself when a feed opens: each at --window-scale of its
--- own size, shrunk to fit the screen if it is larger. A resize by hand shows up
--- in the same property, current-window-scale, so mpv's own changes have to be
--- told apart: anything from a feed opening until shortly after its first frame
--- is mpv's; anything after that is yours.
+-- The menu bar button keeps each screen's size and position (see
+-- Placement.swift in tools/). It works out whether you resized the window by
+-- comparing it with the size mpv gives a feed, so it needs each feed's size:
+-- reported here whenever one starts showing. It keeps the placement file up
+-- to date as you move and resize; the scale is read from it before each feed
+-- opens, so the next feed comes up at your size rather than the one the
+-- viewer opened with.
 --
--- A resize by hand then becomes the --window-scale for the rest of the
--- session, so the next feed opens at your size rather than back at full size,
--- and is reported to the menu bar button, which keeps it for this screen.
+-- Reports go to a file the button watches, one numbered line each.
 
-local settling = true       -- mpv is still sizing the window itself
-local settled_scale = nil   -- current-window-scale once it had finished
-local settle_timer = nil
-local report_timer = nil
-
+local seq = 0
 -- Numbering carries on from the lines already in the file: a reset restarts
 -- mpv, and the menu bar button skips any number it has seen before.
-local seq = 0
 if opts.window_file ~= "" then
     local f = io.open(opts.window_file)
     if f then
@@ -175,53 +171,34 @@ local function report(event)
     end
 end
 
--- A resize still waiting to be reported is dropped too: once a feed is
--- opening, the size it would read is mpv's, not yours.
-local function settle()
-    settling = true
-    if settle_timer then
-        settle_timer:kill()
-        settle_timer = nil
-    end
-    if report_timer then
-        report_timer:kill()
-        report_timer = nil
+-- The feed's display size, reported once its first frame is up — by then mpv
+-- has sized the window for it. Not as soon as mpv knows the size: a feed can
+-- take many seconds to show its first frame after that, with the window still
+-- at the last feed's size, and the button would have taken that for a resize.
+local function report_video()
+    local params = mp.get_property_native("video-params")
+    if params and params.dw and params.dh then
+        report("video " .. params.dw .. " " .. params.dh)
     end
 end
 
--- 1.5s after the first frame: long enough for mpv's own resize to land.
-local function settle_after_first_frame()
-    if settle_timer then
-        settle_timer:kill()
+-- The scale in the placement file, or 1 if it has none.
+local function saved_scale()
+    local f = opts.placement_file ~= "" and io.open(opts.placement_file) or nil
+    if not f then
+        return 1
     end
-    settle_timer = mp.add_timeout(1.5, function()
-        settle_timer = nil
-        settling = false
-        settled_scale = mp.get_property_number("current-window-scale")
-    end)
+    local scale = nil
+    for line in f:lines() do
+        scale = tonumber(line:match("^scale=([%d.]+)$")) or scale
+    end
+    f:close()
+    return scale or 1
 end
 
-mp.observe_property("current-window-scale", "number", function(_, scale)
-    if settling or not scale or not settled_scale then
-        return
-    end
-    if math.abs(scale - settled_scale) < 0.005 then
-        return
-    end
-    -- A drag sends a stream of sizes; act on where it stops.
-    if report_timer then
-        report_timer:kill()
-    end
-    report_timer = mp.add_timeout(0.5, function()
-        report_timer = nil
-        local final = mp.get_property_number("current-window-scale")
-        if not settling and final and math.abs(final - settled_scale) >= 0.005 then
-            settled_scale = final
-            mp.set_property_number("window-scale", final)
-            report(string.format("scale %.4f", final))
-        end
-    end)
-end)
+local function use_saved_scale()
+    mp.set_property_number("window-scale", saved_scale())
+end
 
 -- Back to mpv's default: each feed at its own size, centred on this screen.
 -- Done by restarting mpv — quit 21 is view.sh's signal to drop the saved scale
@@ -250,7 +227,8 @@ local function select_feed(index, force)
     write_current(feed.index)
     build_menu()
     show_loading(feed.name)
-    settle()
+    use_saved_scale()
+    report("feed " .. feed.index)
     mp.commandv("loadfile", feed.url)
 end
 
@@ -305,10 +283,19 @@ end
 
 -- playback-restart is the point frames are actually being shown; file-loaded
 -- can fire while the picture is still blank.
+-- mpv applies --geometry again each time a feed opens, which put the window
+-- back where the viewer opened even after you had moved it (tested on 0.41).
+-- Once the window is up, the position it was started with has done its job:
+-- clear it, and from then on a feed switch keeps the window centred where you
+-- put it. Clearing it does not move the window, on any display (tested).
+local started_at_position = true
+
 mp.register_event("playback-restart", function()
     hide_loading()
-    if settling then
-        settle_after_first_frame()
+    report_video()
+    if started_at_position then
+        started_at_position = false
+        mp.set_property("geometry", "")
     end
 end)
 
@@ -326,6 +313,8 @@ end)
 mp.register_event("end-file", function(e)
     if e and e.reason == "eof" and current and by_index[current] then
         show_loading(by_index[current].name)
-        settle()
+        -- Reconnecting reopens the feed at --window-scale: make that the size
+        -- the window is at now, not the one it opened with.
+        use_saved_scale()
     end
 end)

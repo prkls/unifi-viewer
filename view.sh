@@ -32,7 +32,8 @@ SETTINGS_BIN="${SETTINGS_BIN:-}"
 # from a terminal, means mpv's defaults: the display the pointer is on, each
 # feed at its own size, centred.
 PLACEMENT="$CACHE/placement"
-# menu.lua reports resizes and resets here, for the menu bar button to keep.
+# menu.lua reports each feed's size, feed switches and resets here, for the
+# menu bar button.
 WINDOW_EVENTS="$CACHE/window"
 
 # Right-click menu text size, in points. Override per-run if it does not suit
@@ -216,7 +217,7 @@ while true; do
         --input-default-bindings=no \
         --input-media-keys=no \
         --script="$MENU_LUA" \
-        --script-opts="unifi-feeds_file=$FEEDS,unifi-state_file=$STATE,unifi-window_file=$WINDOW_EVENTS,context_menu-scale_with_window=no,context_menu-font_size=$MENU_FONT_SIZE" \
+        --script-opts="unifi-feeds_file=$FEEDS,unifi-state_file=$STATE,unifi-window_file=$WINDOW_EVENTS,unifi-placement_file=$PLACEMENT,context_menu-scale_with_window=no,context_menu-font_size=$MENU_FONT_SIZE" \
         --no-audio \
         --profile=low-latency \
         --rtsp-transport=tcp \
