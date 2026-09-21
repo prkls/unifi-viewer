@@ -210,7 +210,7 @@ local function report_resize()
     if not settling and final and math.abs(final - settled_scale) >= 0.005 then
         settled_scale = final
         mp.set_property_number("window-scale", final)
-        report(string.format("scale %.4f", final))
+        report(string.format("scale %.6f", final))
     end
 end
 
@@ -268,6 +268,7 @@ local function select_feed(index, force)
     build_menu()
     show_loading(feed.name)
     settle()
+    report("feed " .. feed.index)
     mp.commandv("loadfile", feed.url)
 end
 

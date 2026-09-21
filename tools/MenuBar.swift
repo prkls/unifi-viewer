@@ -43,6 +43,54 @@ let cacheDir = (ProcessInfo.processInfo.environment["XDG_CACHE_HOME"] ?? NSHomeD
     + "/unifi-viewer"
 let placementFile = cacheDir + "/placement"   // written here, read by view.sh
 let windowEventsFile = cacheDir + "/window"   // written by menu.lua, read here
+let placementLog = cacheDir + "/placement.log"
+
+// A record of every open, look, report and save, for working out afterwards
+// why a window came back where it did. Trimmed to the last 500 lines each time
+// the viewer opens, so it stays small.
+let logTime: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+    return f
+}()
+
+func record(_ line: String) {
+    let text = logTime.string(from: Date()) + " " + line + "\n"
+    if let handle = FileHandle(forWritingAtPath: placementLog) {
+        handle.seekToEndOfFile()
+        handle.write(text.data(using: .utf8)!)
+        handle.closeFile()
+    } else {
+        try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+        try? text.write(toFile: placementLog, atomically: true, encoding: .utf8)
+    }
+}
+
+func trimLog() {
+    guard let text = try? String(contentsOfFile: placementLog, encoding: .utf8) else { return }
+    let trimmed = trimmedLog(text, keeping: 500)
+    if trimmed != text {
+        try? trimmed.write(toFile: placementLog, atomically: true, encoding: .utf8)
+    }
+}
+
+func describe(_ rect: CGRect) -> String {
+    return "\(Int(rect.minX)),\(Int(rect.minY)) \(Int(rect.width))x\(Int(rect.height))"
+}
+
+// The feed now selected, as "3 Garage", from the files view.sh keeps.
+func currentFeed() -> String {
+    let index = (try? String(contentsOfFile: cacheDir + "/feed", encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+    let feeds = (try? String(contentsOfFile: cacheDir + "/feeds", encoding: .utf8)) ?? ""
+    for line in feeds.split(separator: "\n") {
+        let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+        if fields.count > 2 && String(fields[0]) == index {
+            return index + " " + String(fields[2])
+        }
+    }
+    return index
+}
 
 struct Screen {
     let name: String      // what mpv's --screen-name matches
@@ -128,14 +176,12 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     var hotKey: EventHotKeyRef?
     var shortcutWorks = false
     var pausedBy: Set<pid_t> = []     // settings windows recording a shortcut
-    var tracker: Timer?               // follows the viewer's window while it is open
+    var reportWatch: DispatchSourceFileSystemObject?  // menu.lua's reports, as they are written
 
     // About the window of the viewer now open.
     var sessionScale: Double?         // the scale it is at, nil for mpv's own
-    var previousFrame: CGRect?        // where it was at the last look
     var lastSeen: (frame: CGRect, screen: Screen)?  // for the final save, once it has gone
     var mouseUpMonitor: Any?          // a look at the end of every drag or resize
-    var ignoreMovesUntil = Date.distantPast
     var seenEvents = 0                // menu.lua lines already acted on
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -151,6 +197,9 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         installShortcutHandler()
         registerShortcut()
         listenToSettings()
+        // Whether macOS trusts this app for Accessibility. Nothing here needs
+        // it; logged so the log shows the mouse watching works without it.
+        record("started, accessibility trusted: \(AXIsProcessTrusted())")
         // Opening the app is asking to see the cameras, where you last had them.
         openViewer(on: lastScreen() ?? pointerScreen())
     }
@@ -166,7 +215,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     // Only reached directly when macOS ends the app, at logout for instance;
     // Quit from the menu closes the viewer first. Save what the last look saw.
     func applicationWillTerminate(_ notification: Notification) {
-        trackViewer()
+        look("quitting")
         [viewer, settings].compactMap { $0 }.forEach { kill(-$0, SIGTERM) }
     }
 
@@ -276,48 +325,44 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     func openViewer(on screen: Screen?) {
         guard viewer == nil else { return }
 
-        var placement = Placement()
-        if let screen = screen {
-            placement = savedPlacement(screen.name)
-            // A resolution change or a smaller display can leave a saved corner
-            // off the edge; centre instead.
-            if let offset = placement.offset,
-               !offsetFits(offset, visible: screen.visible, backing: screen.backing) {
-                placement.offset = nil
-            }
-        }
+        // A resolution change or a smaller display can leave a saved corner
+        // off the edge; centre instead.
+        let placement = screen.map { placementIn(effect: $0) } ?? Placement()
+        trimLog()
+        record("open on \(screen?.name ?? "the pointer's screen"): \(placement.encoded), feed \(currentFeed())")
+
+        // A fresh, empty file for menu.lua's reports, watched so each one is
+        // acted on as soon as it is written. menu.lua appends to it, so the
+        // watch follows the same file for the whole session, restarts included.
         try? FileManager.default.removeItem(atPath: windowEventsFile)
+        FileManager.default.createFile(atPath: windowEventsFile, contents: nil)
         seenEvents = 0
         writePlacementFile(screen?.name, placement)
         sessionScale = placement.scale
-        previousFrame = nil
         lastSeen = nil
-        ignoreMovesUntil = .distantPast
 
         guard let pid = spawnGroup(launcher) else { return }
         viewer = pid
         if let name = screen?.name { remember(name) }
-        // Follows the window while the viewer is open, and only then, so a
-        // closed viewer still costs nothing. Four looks a second: the first
-        // sight of the window has to come before you can have grabbed it, since
-        // it is taken as where mpv put it, and anything changed after the last
-        // look is only saved on the way out. A look costs under a millisecond
-        // (0.7ms measured), against ~17% of a core for the decode itself.
-        tracker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
-            self.trackViewer()
-        }
-        // Releasing the mouse ends every drag and resize, so a look right then
-        // catches the final position even if the viewer is closed a moment
-        // later, before the next timed look. Watching mouse clicks needs no
-        // Accessibility permission, unlike watching keys. The short delay lets
-        // the window settle at where the drag let go.
+        // Nothing polls the window. mpv reports a resize the moment it happens,
+        // through menu.lua; a move has no report without Accessibility
+        // permission, but every drag ends with the mouse button coming up, and
+        // watching for that anywhere needs no permission — Apple restricts
+        // only key events for global monitors. Looks come from those two, and
+        // from closing. A look straight after the button comes up catches a
+        // drag; another half a second later catches a window that slides into
+        // place, such as one tiled against a screen edge. A move made with the
+        // keyboard alone is seen at the next click anywhere, or on closing
+        // from the menu bar or the shortcut.
+        watchReports()
         mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.trackViewer() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.look("mouse up") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.look("mouse up, settled") }
         }
         handOver(to: pid)
         watch(pid) {
-            self.tracker?.invalidate()
-            self.tracker = nil
+            self.reportWatch?.cancel()
+            self.reportWatch = nil
             if let monitor = self.mouseUpMonitor {
                 NSEvent.removeMonitor(monitor)
                 self.mouseUpMonitor = nil
@@ -326,8 +371,9 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             // A resize menu.lua reported after the last look, as mpv shut down,
             // is still in the file: act on it where the window was last seen.
             if let seen = self.lastSeen {
-                self.apply(frame: seen.frame, on: seen.screen, moved: false)
+                self.apply(frame: seen.frame, on: seen.screen, moved: false, why: "closed")
             }
+            record("closed")
             // Nothing left to place; a later run from a terminal gets defaults.
             try? FileManager.default.removeItem(atPath: placementFile)
             try? FileManager.default.removeItem(atPath: windowEventsFile)
@@ -345,7 +391,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             return
         }
         afterViewerExit = then
-        trackViewer()
+        look("closing")
         kill(-pid, SIGTERM)
         // mpv exits within a fraction of a second on SIGTERM. If anything in the
         // group ignores it, do not let a stuck process block the next open.
@@ -463,7 +509,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             return
         }
         var text = "screen=\(screenName)\n"
-        if let scale = placement.scale { text += String(format: "scale=%.4f\n", scale) }
+        if let scale = placement.scale { text += String(format: "scale=%.6f\n", scale) }
         let geometry = geometryArgument(placement)
         if !geometry.isEmpty { text += "geometry=\(geometry)\n" }
         try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
@@ -474,42 +520,64 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         return geometryOffset(window: window, visible: screen.visible, backing: screen.backing)
     }
 
-    // Four times a second while the viewer is open, and once more as it closes:
-    // which screen the window is on, and whether you moved or resized it.
-    func trackViewer() {
-        guard let frame = viewerWindow() else { return }
+    // A saved placement as it takes effect on a screen: without a position
+    // that no longer fits there.
+    func placementIn(effect screen: Screen) -> Placement {
+        return usable(savedPlacement(screen.name), visible: screen.visible, backing: screen.backing)
+    }
+
+    func watchReports() {
+        let fd = open(windowEventsFile, O_EVTONLY)
+        guard fd >= 0 else {
+            record("cannot watch \(windowEventsFile)")
+            return
+        }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend],
+                                                               queue: .main)
+        source.setEventHandler { self.look("report") }
+        source.setCancelHandler { close(fd) }
+        reportWatch = source
+        source.resume()
+    }
+
+    // Which screen the window is on, and whether it has been moved or resized
+    // there. Asked on a report from menu.lua, at the end of every mouse drag,
+    // and on closing.
+    func look(_ trigger: String) {
+        guard viewer != nil, let frame = viewerWindow() else {
+            if viewer != nil { record("look (\(trigger)): no window") }
+            return
+        }
         let screens = currentScreens()
         guard let i = screenIndex(forWindow: frame, in: screens.map { $0.bounds }) else { return }
         let screen = screens[i]
         remember(screen.name)
-
-        // macOS animates a new window in over about a quarter of a second,
-        // growing as it goes; a change of size is never taken for a drag.
-        let moved = Date() >= ignoreMovesUntil
-            && previousFrame.map { isUserMove(from: $0, to: frame) } ?? false
-        previousFrame = frame
+        let moved = hasMoved(frame, from: placementIn(effect: screen),
+                             visible: screen.visible, backing: screen.backing)
+        record("look (\(trigger)): \(describe(frame)) on \(screen.name)\(moved ? ", moved" : "")")
         lastSeen = (frame, screen)
-        apply(frame: frame, on: screen, moved: moved)
+        apply(frame: frame, on: screen, moved: moved, why: trigger)
     }
 
     // Act on menu.lua's new reports and on a drag, for a window at `frame`.
-    func apply(frame: CGRect, on screen: Screen, moved: Bool) {
+    func apply(frame: CGRect, on screen: Screen, moved: Bool, why: String) {
         let text = (try? String(contentsOfFile: windowEventsFile, encoding: .utf8)) ?? ""
         let (events, last) = windowEvents(text, after: seenEvents)
         seenEvents = last
+        for event in events {
+            switch event {
+            case .scale(let value): record("report: resized to \(value)")
+            case .reset: record("report: reset")
+            case .feed(let index): record("report: feed \(index)")
+            }
+        }
 
-        let outcome = track(saved: savedPlacement(screen.name), events: events, moved: moved,
+        let before = savedPlacement(screen.name)
+        let outcome = track(saved: before, events: events, moved: moved,
                             offset: offset(of: frame, on: screen), sessionScale: sessionScale)
         sessionScale = outcome.sessionScale
-        if outcome.wasReset {
-            // view.sh restarts mpv at its defaults. Until the new window has
-            // settled, a change of position is that, not a drag: the restart
-            // includes connecting to the camera, which occasionally takes over
-            // 30 seconds.
-            previousFrame = nil
-            ignoreMovesUntil = Date().addingTimeInterval(40)
-        }
-        if outcome.changed {
+        if outcome.changed && outcome.placement != before {
+            record("save \(screen.name): \(before.encoded) -> \(outcome.placement.encoded) (\(why))")
             save(outcome.placement, for: screen.name)
             writePlacementFile(screen.name, outcome.placement)
         }
