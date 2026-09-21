@@ -138,6 +138,59 @@ resume_index() {
     esac
 }
 
+# placement_field <file> <key>
+#
+# One value from the placement file the menu bar button writes before opening
+# the viewer, and rewrites whenever the window is moved or resized:
+#
+#   screen=Studio Display
+#   scale=0.75
+#   geometry=+200+150
+#
+# Prints nothing if the file or the key is missing, which view.sh reads as
+# "mpv's default". Values are checked here rather than trusted, since they end
+# up on mpv's command line: a scale must be a positive number, a geometry must
+# be +X+Y in whole pixels, where either may be negative as "+-380".
+placement_field() {
+    [ -f "$1" ] || return 0
+    _value=$(sed -n "s/^$2=//p" "$1" | tail -1)
+    case "$2" in
+        scale)
+            case "$_value" in
+                ''|*[!0-9.]*|*.*.*|.) ;;
+                *) awk -v v="$_value" 'BEGIN { exit !(v + 0 > 0) }' && printf '%s' "$_value" ;;
+            esac
+            ;;
+        geometry)
+            case "$_value" in
+                +*+*)
+                    _rest="${_value#+}"
+                    _x="${_rest%%+*}"
+                    _y="${_rest#*+}"
+                    case "${_x#-}" in ''|*[!0-9]*) return 0 ;; esac
+                    case "${_y#-}" in ''|*[!0-9]*) return 0 ;; esac
+                    printf '%s' "$_value"
+                    ;;
+            esac
+            ;;
+        *) printf '%s' "$_value" ;;
+    esac
+}
+
+# placement_reset <file>
+#
+# Drop the scale and position from a placement file, keeping the screen, so
+# the next start is mpv's default size and position on the same display.
+placement_reset() {
+    [ -f "$1" ] || return 0
+    _screen=$(sed -n 's/^screen=//p' "$1" | tail -1)
+    if [ -n "$_screen" ]; then
+        printf 'screen=%s\n' "$_screen" >"$1"
+    else
+        : >"$1"
+    fi
+}
+
 # feeds_load <config-file>
 #
 # Read streams.conf and emit one "<index>\t<name>\t<url>" line per usable feed.

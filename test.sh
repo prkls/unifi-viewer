@@ -192,6 +192,71 @@ assert_eq "junk saved: first"                "1" "$(resume_index 'abc' 4)"
 assert_eq "zero saved: first"                "1" "$(resume_index 0 4)"
 assert_eq "tenth feed resumes"               "10" "$(resume_index 10 10)"
 
+# --- placement_field -------------------------------------------------------
+
+placed=$(fixture 'screen=Built-in Retina Display
+scale=0.75
+geometry=+200+150
+')
+assert_eq "screen name keeps its spaces" "Built-in Retina Display" "$(placement_field "$placed" screen)"
+assert_eq "scale read"                   "0.75" "$(placement_field "$placed" scale)"
+assert_eq "geometry read"                "+200+150" "$(placement_field "$placed" geometry)"
+assert_eq "missing file: nothing"        "" "$(placement_field /nonexistent/placement scale)"
+assert_eq "missing key: nothing"         "" "$(placement_field "$(fixture 'screen=Studio Display
+')" geometry)"
+assert_eq "empty value: nothing"         "" "$(placement_field "$(fixture 'geometry=
+')" geometry)"
+assert_eq "whole-number scale"           "2" "$(placement_field "$(fixture 'scale=2
+')" scale)"
+assert_eq "zero scale refused"           "" "$(placement_field "$(fixture 'scale=0
+')" scale)"
+assert_eq "zero with decimals refused"   "" "$(placement_field "$(fixture 'scale=0.00
+')" scale)"
+assert_eq "small scale kept"             "0.05" "$(placement_field "$(fixture 'scale=0.05
+')" scale)"
+assert_eq "negative scale refused"       "" "$(placement_field "$(fixture 'scale=-1
+')" scale)"
+assert_eq "word scale refused"           "" "$(placement_field "$(fixture 'scale=big
+')" scale)"
+assert_eq "two dots refused"             "" "$(placement_field "$(fixture 'scale=0.5.1
+')" scale)"
+assert_eq "offset off the left kept"     "+-380+570" "$(placement_field "$(fixture 'geometry=+-380+570
+')" geometry)"
+assert_eq "offset off the top kept"      "+200+-40" "$(placement_field "$(fixture 'geometry=+200+-40
+')" geometry)"
+assert_eq "right-edge form refused"      "" "$(placement_field "$(fixture 'geometry=-20+150
+')" geometry)"
+assert_eq "double minus refused"         "" "$(placement_field "$(fixture 'geometry=+--20+150
+')" geometry)"
+assert_eq "bare minus refused"           "" "$(placement_field "$(fixture 'geometry=+-+150
+')" geometry)"
+assert_eq "three parts refused"          "" "$(placement_field "$(fixture 'geometry=+1+2+3
+')" geometry)"
+assert_eq "size in geometry refused"     "" "$(placement_field "$(fixture 'geometry=640x360+200+150
+')" geometry)"
+assert_eq "option smuggled in refused"   "" "$(placement_field "$(fixture 'geometry=+200+150 --no-config
+')" geometry)"
+assert_eq "last line wins"               "+10+20" "$(placement_field "$(fixture 'geometry=+200+150
+geometry=+10+20
+')" geometry)"
+
+# --- placement_reset -------------------------------------------------------
+
+resettable=$(fixture 'screen=Built-in Retina Display
+scale=0.3120
+geometry=+200+150
+')
+placement_reset "$resettable"
+assert_eq "reset keeps the screen"    "Built-in Retina Display" "$(placement_field "$resettable" screen)"
+assert_eq "reset drops the scale"     "" "$(placement_field "$resettable" scale)"
+assert_eq "reset drops the position"  "" "$(placement_field "$resettable" geometry)"
+noscreen=$(fixture 'scale=0.5
+')
+placement_reset "$noscreen"
+assert_eq "reset with no screen empties the file" "" "$(cat "$noscreen")"
+placement_reset /nonexistent/placement
+assert_eq "reset of a missing file is harmless" "0" "$?"
+
 # --- menu bar logic (Swift) ------------------------------------------------
 # Compiled and run here so one command covers everything. Skipped, and said
 # so, without swiftc: the app then builds without the menu bar button anyway.
@@ -199,7 +264,7 @@ assert_eq "tenth feed resumes"               "10" "$(resume_index 10 10)"
 if command -v swiftc >/dev/null 2>&1; then
     swift_bin=$(mktemp)
     TMPFILES="$TMPFILES $swift_bin"
-    if swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/MenuBarLogicTests.swift \
+    if swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/Placement.swift tools/MenuBarLogicTests.swift \
             -o "$swift_bin" 2>&1; then
         swift_out=$("$swift_bin")
         printf '%s\n' "$swift_out" | grep -v ' passed, ' || true

@@ -1,6 +1,6 @@
-// Unit tests for MenuBarLogic.swift and Shortcut.swift. Run by test.sh:
+// Unit tests for MenuBarLogic.swift, Shortcut.swift and Placement.swift. Run by test.sh:
 //
-//   swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/MenuBarLogicTests.swift
+//   swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/Placement.swift tools/MenuBarLogicTests.swift
 //
 // Plain assertions, no XCTest, to match test.sh. Prints one line per failure
 // and a final "N passed, M failed" line that test.sh adds to its own totals.
@@ -160,6 +160,104 @@ enum MenuBarLogicTests {
                  clashesWithSystem(Shortcut(keyCode: 122, modifiers: cmdMask, key: "F1"), system))
         assertEq("a disabled system shortcut does not clash", false,
                  clashesWithSystem(Shortcut(keyCode: 40, modifiers: cmdMask | controlMask, key: "K"), system))
+
+        // --- Placement ---------------------------------------------------------
+
+        let placed = Placement(offset: CGPoint(x: 200, y: 150), scale: 0.75)
+        assertEq("placement encodes", "200 150 0.75", placed.encoded)
+        assertEq("placement round-trips", placed, Placement(encoded: placed.encoded))
+        assertEq("scale only round-trips", Placement(scale: 0.5), Placement(encoded: "- - 0.5"))
+        assertEq("position only round-trips", Placement(offset: CGPoint(x: 0, y: 12)), Placement(encoded: "0 12 -"))
+        assertEq("default encodes as dashes", "- - -", Placement().encoded)
+        assertEq("default is default", true, Placement().isDefault)
+        assertEq("scale alone is not default", false, Placement(scale: 0.5).isDefault)
+        assertEq("junk does not decode", nil, Placement(encoded: "left top big"))
+        assertEq("half a position does not decode", nil, Placement(encoded: "200 - 0.5"))
+        assertEq("zero scale does not decode", nil, Placement(encoded: "- - 0"))
+        assertEq("too few fields do not decode", nil, Placement(encoded: "200 150"))
+
+        assertEq("no position: mpv's own choice", "", geometryArgument(Placement(scale: 0.5)))
+        assertEq("position as --geometry", "+200+150", geometryArgument(placed))
+        // Measured: dragged part-way off the left, then reopened exactly there.
+        assertEq("off the left edge as --geometry", "+-380+570",
+                 geometryArgument(Placement(offset: CGPoint(x: -380, y: 570))))
+        assertEq("off-left position round-trips", Placement(offset: CGPoint(x: -380, y: 570), scale: 0.625),
+                 Placement(encoded: "-380 570 0.625"))
+
+        // --- quartzRect ---------------------------------------------------------
+
+        // visibleFrame as NSScreen reports it, below each menu bar.
+        let studioVisible = quartzRect(fromCocoa: CGRect(x: 0, y: 0, width: 3200, height: 1769), mainHeight: 1800)
+        let builtinVisible = quartzRect(fromCocoa: CGRect(x: 699, y: -1169, width: 1800, height: 1131), mainHeight: 1800)
+        assertEq("main display's visible area starts below its menu bar",
+                 CGRect(x: 0, y: 31, width: 3200, height: 1769), studioVisible)
+        assertEq("built-in's visible area, below the main display",
+                 CGRect(x: 699, y: 1838, width: 1800, height: 1131), builtinVisible)
+
+        // --- geometryOffset -----------------------------------------------------
+
+        // Measured: +200+150 on the main display put the corner at 100,106.
+        assertEq("main display: offset from the visible area, in pixels",
+                 CGPoint(x: 200, y: 150),
+                 geometryOffset(window: CGRect(x: 100, y: 106, width: 320, height: 180),
+                                visible: studioVisible, backing: 2))
+        // Measured: +200+150 on the built-in put the corner at 799,1915 — two
+        // points lower than its visibleFrame predicts.
+        let builtinCalibration = Calibration(requested: CGPoint(x: 200, y: 150), observed: CGPoint(x: 799, y: 1915))
+        assertEq("built-in, uncalibrated: 2 points out",
+                 CGPoint(x: 200, y: 154),
+                 geometryOffset(window: CGRect(x: 799, y: 1915, width: 320, height: 180),
+                                visible: builtinVisible, backing: 2))
+        assertEq("built-in, calibrated: exact, so it cannot creep",
+                 CGPoint(x: 200, y: 150),
+                 geometryOffset(window: CGRect(x: 799, y: 1915, width: 320, height: 180),
+                                visible: builtinVisible, backing: 2, calibration: builtinCalibration))
+        assertEq("built-in, calibrated: a drag is measured from the pair",
+                 CGPoint(x: 300, y: 250),
+                 geometryOffset(window: CGRect(x: 849, y: 1965, width: 320, height: 180),
+                                visible: builtinVisible, backing: 2, calibration: builtinCalibration))
+
+        // --- offsetFits ---------------------------------------------------------
+
+        assertEq("corner on the screen fits", true,
+                 offsetFits(CGPoint(x: 200, y: 150), visible: studioVisible, backing: 2))
+        assertEq("top-left corner itself fits", true,
+                 offsetFits(CGPoint(x: 0, y: 0), visible: studioVisible, backing: 2))
+        assertEq("past the right edge does not fit", false,
+                 offsetFits(CGPoint(x: 6400, y: 150), visible: studioVisible, backing: 2))
+        assertEq("past the bottom of a smaller screen does not fit", false,
+                 offsetFits(CGPoint(x: 200, y: 3000), visible: builtinVisible, backing: 2))
+        assertEq("part-way off the left fits", true,
+                 offsetFits(CGPoint(x: -380, y: 570), visible: studioVisible, backing: 2))
+        assertEq("part-way off the top fits", true,
+                 offsetFits(CGPoint(x: 200, y: -40), visible: studioVisible, backing: 2))
+        assertEq("more than half off the left does not fit", false,
+                 offsetFits(CGPoint(x: -3300, y: 570), visible: studioVisible, backing: 2))
+
+        // --- isUserMove ---------------------------------------------------------
+
+        let before = CGRect(x: 1280, y: 736, width: 640, height: 360)
+        assertEq("dragged: same size, new place", true,
+                 isUserMove(from: before, to: CGRect(x: 1180, y: 636, width: 640, height: 360)))
+        assertEq("standing still is not a move", false, isUserMove(from: before, to: before))
+        assertEq("feed switch re-centring changes size: not a drag", false,
+                 isUserMove(from: before, to: CGRect(x: 1360, y: 596, width: 480, height: 640)))
+        assertEq("resized from the corner: not a drag", false,
+                 isUserMove(from: before, to: CGRect(x: 1280, y: 736, width: 480, height: 270)))
+        assertEq("sub-point jitter is not a move", false,
+                 isUserMove(from: before, to: CGRect(x: 1280.4, y: 736, width: 640, height: 360)))
+
+        // --- windowEvents -------------------------------------------------------
+
+        let log = "1 scale 0.75\n2 reset\n3 scale 0.5\n"
+        assertEq("all events read", [WindowEvent.scale(0.75), .reset, .scale(0.5)], windowEvents(log, after: 0).events)
+        assertEq("last sequence number", 3, windowEvents(log, after: 0).last)
+        assertEq("only events not yet seen", [WindowEvent.scale(0.5)], windowEvents(log, after: 2).events)
+        assertEq("nothing new", [WindowEvent](), windowEvents(log, after: 3).events)
+        assertEq("nothing new keeps the count", 3, windowEvents(log, after: 3).last)
+        assertEq("garbled lines skipped", [WindowEvent.reset],
+                 windowEvents("x scale 1\n1 scale\n2 scale -1\n3 reset\n4 wobble\n", after: 0).events)
+        assertEq("empty file", [WindowEvent](), windowEvents("", after: 0).events)
 
         print("\(pass) passed, \(fail) failed")
         if fail > 0 { exit(1) }

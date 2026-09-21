@@ -8,13 +8,13 @@
 -- Feeds come from a file written by view.sh rather than being parsed here, so
 -- lib.sh stays the single source of truth for config and URL handling.
 --
---   --script-opts=unifi-feeds_file=<path>,unifi-state_file=<path>
+--   --script-opts=unifi-feeds_file=<path>,unifi-state_file=<path>,unifi-window_file=<path>
 
 local mp = require "mp"
 local assdraw = require "mp.assdraw"
 local options = require "mp.options"
 
-local opts = { feeds_file = "", state_file = "" }
+local opts = { feeds_file = "", state_file = "", window_file = "" }
 options.read_options(opts, "unifi")
 
 local feeds = {}      -- array of { index, key, name, url }
@@ -133,6 +133,107 @@ local function hide_loading()
     end
 end
 
+-- Window size ---------------------------------------------------------------
+--
+-- mpv sizes the window itself when a feed opens: each at --window-scale of its
+-- own size, shrunk to fit the screen if it is larger. A resize by hand shows up
+-- in the same property, current-window-scale, so mpv's own changes have to be
+-- told apart: anything from a feed opening until shortly after its first frame
+-- is mpv's; anything after that is yours.
+--
+-- A resize by hand then becomes the --window-scale for the rest of the
+-- session, so the next feed opens at your size rather than back at full size,
+-- and is reported to the menu bar button, which keeps it for this screen.
+
+local settling = true       -- mpv is still sizing the window itself
+local settled_scale = nil   -- current-window-scale once it had finished
+local settle_timer = nil
+local report_timer = nil
+
+-- Numbering carries on from the lines already in the file: a reset restarts
+-- mpv, and the menu bar button skips any number it has seen before.
+local seq = 0
+if opts.window_file ~= "" then
+    local f = io.open(opts.window_file)
+    if f then
+        for _ in f:lines() do
+            seq = seq + 1
+        end
+        f:close()
+    end
+end
+
+local function report(event)
+    if opts.window_file == "" then
+        return
+    end
+    seq = seq + 1
+    local f = io.open(opts.window_file, "a")
+    if f then
+        f:write(tostring(seq), " ", event, "\n")
+        f:close()
+    end
+end
+
+-- A resize still waiting to be reported is dropped too: once a feed is
+-- opening, the size it would read is mpv's, not yours.
+local function settle()
+    settling = true
+    if settle_timer then
+        settle_timer:kill()
+        settle_timer = nil
+    end
+    if report_timer then
+        report_timer:kill()
+        report_timer = nil
+    end
+end
+
+-- 1.5s after the first frame: long enough for mpv's own resize to land.
+local function settle_after_first_frame()
+    if settle_timer then
+        settle_timer:kill()
+    end
+    settle_timer = mp.add_timeout(1.5, function()
+        settle_timer = nil
+        settling = false
+        settled_scale = mp.get_property_number("current-window-scale")
+    end)
+end
+
+mp.observe_property("current-window-scale", "number", function(_, scale)
+    if settling or not scale or not settled_scale then
+        return
+    end
+    if math.abs(scale - settled_scale) < 0.005 then
+        return
+    end
+    -- A drag sends a stream of sizes; act on where it stops.
+    if report_timer then
+        report_timer:kill()
+    end
+    report_timer = mp.add_timeout(0.5, function()
+        report_timer = nil
+        local final = mp.get_property_number("current-window-scale")
+        if not settling and final and math.abs(final - settled_scale) >= 0.005 then
+            settled_scale = final
+            mp.set_property_number("window-scale", final)
+            report(string.format("scale %.4f", final))
+        end
+    end)
+end)
+
+-- Back to mpv's default: each feed at its own size, centred on this screen.
+-- Done by restarting mpv — quit 21 is view.sh's signal to drop the saved scale
+-- and position and start again — because moving an open window is unreliable:
+-- on mpv 0.41 a runtime --geometry lands in the wrong place on any display but
+-- the main one, measured from the main display's left edge. A window placed at
+-- startup is right on every display.
+local function reset_window()
+    report("reset")
+    mp.command("quit 21")
+end
+
 -- Switching goes through here rather than a bare loadfile so the state file and
 -- the tick stay in step with what is playing. view.sh reads that state file to
 -- resume the right feed after a reconnect.
@@ -149,6 +250,7 @@ local function select_feed(index, force)
     write_current(feed.index)
     build_menu()
     show_loading(feed.name)
+    settle()
     mp.commandv("loadfile", feed.url)
 end
 
@@ -166,6 +268,7 @@ build_menu()
 
 mp.register_script_message("unifi-select", function(index) select_feed(index, false) end)
 mp.register_script_message("unifi-reload", reload_feed)
+mp.register_script_message("unifi-reset-window", reset_window)
 
 -- The macOS menu bar is mpv's own and cannot be customised. Its Playback menu
 -- sends commands straight to the core, bypassing input.conf entirely, so no
@@ -202,7 +305,12 @@ end
 
 -- playback-restart is the point frames are actually being shown; file-loaded
 -- can fire while the picture is still blank.
-mp.register_event("playback-restart", hide_loading)
+mp.register_event("playback-restart", function()
+    hide_loading()
+    if settling then
+        settle_after_first_frame()
+    end
+end)
 
 mp.register_event("file-loaded", function()
     -- The state file can change from outside this script, so re-sync the tick.
@@ -218,5 +326,6 @@ end)
 mp.register_event("end-file", function(e)
     if e and e.reason == "eof" and current and by_index[current] then
         show_loading(by_index[current].name)
+        settle()
     end
 end)
