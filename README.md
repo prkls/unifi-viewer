@@ -7,6 +7,7 @@ closes the viewer. LAN only — it talks to the UDM Pro directly and never leave
 ```
 1-9, 0        select a feed, in config order
 r             reload the current feed (back to live)
+⌃⌥⌘R          reset the window to its default size and position on this screen
 ,             camera settings
 q             close the viewer (quit, from a terminal)
 right-click   menu of feed names
@@ -60,6 +61,35 @@ is (tested on mpv 0.41).
 
 `q`, Cmd+Q, the right-click Quit and the Dock tile's Quit all close the viewer and leave
 the button. Quit the app itself from the button's right-click menu.
+
+## Window position and size
+
+Each screen remembers where you last put the window on it and how large you made it. A
+screen you have not changed anything on keeps the default: each feed at its own size,
+centred. The viewer opens at a screen's saved placement whichever way it opens there —
+launching the app (on the screen it was last on), a menu bar click on that screen, or the
+keyboard shortcut.
+
+**Size is kept as a scale, not a width and height.** The feeds differ in shape — a 32:9
+panorama, a portrait doorbell — and a fixed size would squeeze them all into one shape.
+Shrink the window to 60% and every feed opens at 60% of its own size on that screen, and
+switching feeds keeps both the scale and the window's top-left corner.
+
+**⌃⌥⌘R** puts the window back to the default on the screen it is on, and forgets what that
+screen had saved. It works while the viewer has focus, like the other keys. It restarts
+the viewer rather than moving the window, so the picture reconnects: mpv 0.41 puts a
+window moved while open in the wrong place on any display but the main one.
+
+The menu bar button follows the window every 2 seconds while the viewer is open, and not
+at all while it is closed. A move is only saved when the window's size did not change,
+since mpv re-centres the window itself when a feed of another size opens. A saved
+position that no longer fits the screen, after a resolution change for instance, is
+ignored and the window opens centred.
+
+On a MacBook display with a notch, mpv measures the usable area 2 points lower than macOS
+does. Positions are measured against where mpv really put the window rather than
+converted from macOS's figures, which otherwise moved the window down 2 points on every
+reopen.
 
 ## Keyboard shortcut
 
@@ -214,7 +244,7 @@ If the `rtsps` endpoint itself ever breaks, the other escape hatch is
 ## Tests
 
 ```sh
-./test.sh            # 97 unit tests for the config, URL, menu bar and shortcut logic — no network needed
+./test.sh            # 164 unit tests for the config, URL, menu bar, shortcut and placement logic — no network needed
 ./test-contract.sh   # pulls a frame from every configured feed
 ```
 
