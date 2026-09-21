@@ -24,6 +24,20 @@ func toggleAction(viewerRunning: Bool, viewerScreen: Int?, clickedScreen: Int) -
     return .move(screen: clickedScreen)
 }
 
+// What the keyboard shortcut should do. Unlike a click it names no screen, so
+// it opens where the viewer was last seen, or failing that where the pointer is.
+func shortcutAction(viewerRunning: Bool, lastScreen: Int?, pointerScreen: Int) -> ToggleAction {
+    guard viewerRunning else { return .open(screen: lastScreen ?? pointerScreen) }
+    return .close
+}
+
+// A remembered screen, found again by name. nil if nothing was remembered or
+// that display is no longer connected.
+func screenIndex(named name: String?, in names: [String]) -> Int? {
+    guard let name = name else { return nil }
+    return names.firstIndex(of: name)
+}
+
 // The screen containing a point, or nil if it is on none.
 //
 // The pointer sits on the very top row of a screen when it clicks the menu bar,

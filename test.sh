@@ -199,7 +199,7 @@ assert_eq "tenth feed resumes"               "10" "$(resume_index 10 10)"
 if command -v swiftc >/dev/null 2>&1; then
     swift_bin=$(mktemp)
     TMPFILES="$TMPFILES $swift_bin"
-    if swiftc -parse-as-library tools/MenuBarLogic.swift tools/MenuBarLogicTests.swift \
+    if swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/MenuBarLogicTests.swift \
             -o "$swift_bin" 2>&1; then
         swift_out=$("$swift_bin")
         printf '%s\n' "$swift_out" | grep -v ' passed, ' || true
