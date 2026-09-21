@@ -72,20 +72,32 @@ keyboard shortcut.
 
 **Size is kept as a scale, not a width and height.** The feeds differ in shape — a 32:9
 panorama, a portrait doorbell — and a fixed size would squeeze them all into one shape.
-Shrink the window to 60% and every feed opens at 60% of its own size on that screen, and
-switching feeds keeps both the scale and the window's top-left corner.
+Shrink the window to 60% and every feed opens at 60% of its own size on that screen.
+Switching feeds keeps the scale, and keeps the window centred where you put it.
 
 **⌃⌥⌘R** puts the window back to the default on the screen it is on, and forgets what that
 screen had saved. It works while the viewer has focus, like the other keys. It restarts
 the viewer rather than moving the window, so the picture reconnects: mpv 0.41 puts a
 window moved while open in the wrong place on any display but the main one.
 
-The menu bar button follows the window four times a second while the viewer is open, and
-not at all while it is closed. Each look costs under a millisecond. Closing the viewer,
-however it is closed, saves anything changed since the last look. A move is only saved when the window's size did not change,
-since mpv re-centres the window itself when a feed of another size opens. A saved
-position that no longer fits the screen, after a resolution change for instance, is
-ignored and the window opens centred.
+**Nothing polls the window.** The menu bar button looks at it when the mouse button comes
+up after a drag or resize, when the viewer reports a feed starting, and on closing. That
+needs no Accessibility permission: Apple restricts only key events for apps watching
+input system-wide. A move made with the keyboard alone, such as a macOS tiling shortcut,
+is picked up at the next click anywhere, or on closing from the menu bar or the shortcut.
+
+**Moves and resizes are judged against what mpv would have done**, not against the last
+look, so it does not matter when the look happens. A window is moved if it is no longer
+at its saved corner, or no longer centred if it has none. It is resized if its size is not
+the feed's size at its scale, fitted to the screen. While a feed is still connecting, the
+window keeps the last feed's size, so resizes are not judged until the new feed shows.
+
+A saved position that no longer fits the screen, after a resolution change for instance,
+is ignored and the window opens centred.
+
+**Every open, look, report and save is logged** to `~/.cache/unifi-viewer/placement.log`,
+kept to its last 500 lines. When a window comes back somewhere unexpected, the log shows
+which save put it there, and why.
 
 Positions are measured from the screen's usable area as an app sees it. On a MacBook
 display with a notch, apps get a menu bar 2 points taller than a command-line process does,
