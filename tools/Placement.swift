@@ -60,30 +60,16 @@ func quartzRect(fromCocoa rect: CGRect, mainHeight: CGFloat) -> CGRect {
     return CGRect(x: rect.minX, y: mainHeight - rect.maxY, width: rect.width, height: rect.height)
 }
 
-// A position the viewer was opened at, and where mpv actually put the window
-// for it. mpv's idea of the visible area is not always macOS's: on a MacBook
-// display with a notch it starts 2 points lower than NSScreen.visibleFrame
-// says, so converting with visibleFrame alone moved the window down 2 points
-// on every save and reopen (measured on mpv 0.41). Measuring from a pair mpv
-// itself produced is exact on any display.
-struct Calibration: Equatable {
-    var requested: CGPoint   // the --geometry offset, in pixels
-    var observed: CGPoint    // where the window's corner appeared, in Quartz points
-}
-
 // Where a window sits, as mpv's --geometry offset: pixels from the top-left of
 // the visible area. Window and visible area are in Quartz points; mpv counts
 // pixels, so a Retina screen doubles the numbers.
 //
-// With a calibration from this screen, the offset is measured from that; the
-// visible area is the fallback, for windows that opened centred or were
-// dragged here from another screen.
-func geometryOffset(window: CGRect, visible: CGRect, backing: CGFloat,
-                    calibration: Calibration? = nil) -> CGPoint {
-    if let c = calibration {
-        return CGPoint(x: (c.requested.x + (window.minX - c.observed.x) * backing).rounded(),
-                       y: (c.requested.y + (window.minY - c.observed.y) * backing).rounded())
-    }
+// The visible area must be the one an app sees. On a MacBook display with a
+// notch, apps get a menu bar 2 points taller than a command-line process does
+// (40 against 38, measured), and mpv, being an app, places windows by the
+// app's figure. The menu bar button, also an app, sees the same one, so the
+// conversion is exact both ways (tested on mpv 0.41).
+func geometryOffset(window: CGRect, visible: CGRect, backing: CGFloat) -> CGPoint {
     return CGPoint(x: ((window.minX - visible.minX) * backing).rounded(),
                    y: ((window.minY - visible.minY) * backing).rounded())
 }

@@ -186,13 +186,14 @@ enum MenuBarLogicTests {
 
         // --- quartzRect ---------------------------------------------------------
 
-        // visibleFrame as NSScreen reports it, below each menu bar.
+        // visibleFrame as NSScreen reports it to an app, below each menu bar.
+        // The built-in's menu bar is 40 points, since it has a notch.
         let studioVisible = quartzRect(fromCocoa: CGRect(x: 0, y: 0, width: 3200, height: 1769), mainHeight: 1800)
-        let builtinVisible = quartzRect(fromCocoa: CGRect(x: 699, y: -1169, width: 1800, height: 1131), mainHeight: 1800)
+        let builtinVisible = quartzRect(fromCocoa: CGRect(x: 699, y: -1169, width: 1800, height: 1129), mainHeight: 1800)
         assertEq("main display's visible area starts below its menu bar",
                  CGRect(x: 0, y: 31, width: 3200, height: 1769), studioVisible)
         assertEq("built-in's visible area, below the main display",
-                 CGRect(x: 699, y: 1838, width: 1800, height: 1131), builtinVisible)
+                 CGRect(x: 699, y: 1840, width: 1800, height: 1129), builtinVisible)
 
         // --- geometryOffset -----------------------------------------------------
 
@@ -201,21 +202,20 @@ enum MenuBarLogicTests {
                  CGPoint(x: 200, y: 150),
                  geometryOffset(window: CGRect(x: 100, y: 106, width: 320, height: 180),
                                 visible: studioVisible, backing: 2))
-        // Measured: +200+150 on the built-in put the corner at 799,1915 — two
-        // points lower than its visibleFrame predicts.
-        let builtinCalibration = Calibration(requested: CGPoint(x: 200, y: 150), observed: CGPoint(x: 799, y: 1915))
-        assertEq("built-in, uncalibrated: 2 points out",
-                 CGPoint(x: 200, y: 154),
-                 geometryOffset(window: CGRect(x: 799, y: 1915, width: 320, height: 180),
-                                visible: builtinVisible, backing: 2))
-        assertEq("built-in, calibrated: exact, so it cannot creep",
+        // Measured: +200+150 on the built-in put the corner at 799,1915.
+        assertEq("built-in: exact, so it cannot creep",
                  CGPoint(x: 200, y: 150),
                  geometryOffset(window: CGRect(x: 799, y: 1915, width: 320, height: 180),
-                                visible: builtinVisible, backing: 2, calibration: builtinCalibration))
-        assertEq("built-in, calibrated: a drag is measured from the pair",
-                 CGPoint(x: 300, y: 250),
-                 geometryOffset(window: CGRect(x: 849, y: 1965, width: 320, height: 180),
-                                visible: builtinVisible, backing: 2, calibration: builtinCalibration))
+                                visible: builtinVisible, backing: 2))
+        // Measured: +1590+240 on the built-in put the corner at 1494,1960.
+        assertEq("built-in: a second measured position",
+                 CGPoint(x: 1590, y: 240),
+                 geometryOffset(window: CGRect(x: 1494, y: 1960, width: 922, height: 259),
+                                visible: builtinVisible, backing: 2))
+        assertEq("at the very top: offset 0",
+                 CGPoint(x: 1350, y: 0),
+                 geometryOffset(window: CGRect(x: 1374, y: 1840, width: 922, height: 259),
+                                visible: builtinVisible, backing: 2))
 
         // --- offsetFits ---------------------------------------------------------
 
