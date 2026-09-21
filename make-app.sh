@@ -45,7 +45,8 @@ cp "$(readlink -f "$MPV_SRC" 2>/dev/null || echo "$MPV_SRC")" "$APP/Contents/Mac
 # which is what happens from a terminal anyway.
 if command -v swiftc >/dev/null 2>&1; then
     echo "compiling settings window..."
-    swiftc -O "$REPO/tools/Settings.swift" -o "$APP/Contents/MacOS/settings" \
+    swiftc -O -parse-as-library "$REPO/tools/Shortcut.swift" "$REPO/tools/Settings.swift" \
+        -o "$APP/Contents/MacOS/settings" \
         || echo "make-app.sh: settings window failed to build, continuing without it" >&2
 else
     echo "make-app.sh: swiftc not found (install Xcode command line tools)," >&2
@@ -100,7 +101,8 @@ chmod +x "$APP/Contents/MacOS/launch-viewer"
 # the button existed: open to start, quit to stop.
 if command -v swiftc >/dev/null 2>&1 \
     && echo "compiling menu bar button..." \
-    && swiftc -O -parse-as-library "$REPO/tools/MenuBarLogic.swift" "$REPO/tools/MenuBar.swift" \
+    && swiftc -O -parse-as-library "$REPO/tools/MenuBarLogic.swift" "$REPO/tools/Shortcut.swift" \
+        "$REPO/tools/MenuBar.swift" \
         -o "$APP/Contents/MacOS/unifi-viewer"; then
     :
 else

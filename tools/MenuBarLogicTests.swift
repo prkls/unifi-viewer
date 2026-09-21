@@ -1,6 +1,6 @@
-// Unit tests for MenuBarLogic.swift. Run by test.sh:
+// Unit tests for MenuBarLogic.swift and Shortcut.swift. Run by test.sh:
 //
-//   swiftc -parse-as-library tools/MenuBarLogic.swift tools/MenuBarLogicTests.swift
+//   swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/MenuBarLogicTests.swift
 //
 // Plain assertions, no XCTest, to match test.sh. Prints one line per failure
 // and a final "N passed, M failed" line that test.sh adds to its own totals.
@@ -86,6 +86,80 @@ enum MenuBarLogicTests {
                  nil, screenIndex(forWindow: CGRect(x: -5000, y: -5000, width: 100, height: 100), in: cg))
         assertEq("touching an edge is not being on it",
                  nil, screenIndex(forWindow: CGRect(x: 3200, y: 0, width: 100, height: 100), in: [cgStudio]))
+
+        // --- shortcutAction --------------------------------------------------
+
+        assertEq("shortcut, closed: opens on the last screen",
+                 ToggleAction.open(screen: 1),
+                 shortcutAction(viewerRunning: false, lastScreen: 1, pointerScreen: 0))
+        assertEq("shortcut, closed, no last screen: opens where the pointer is",
+                 ToggleAction.open(screen: 0),
+                 shortcutAction(viewerRunning: false, lastScreen: nil, pointerScreen: 0))
+        assertEq("shortcut, open: closes, wherever it is",
+                 ToggleAction.close,
+                 shortcutAction(viewerRunning: true, lastScreen: 1, pointerScreen: 0))
+
+        // --- screenIndex(named:) --------------------------------------------
+
+        let names = ["Studio Display", "Built-in Retina Display"]
+        assertEq("remembered screen found", 1, screenIndex(named: "Built-in Retina Display", in: names))
+        assertEq("remembered screen disconnected", nil, screenIndex(named: "LG UltraFine", in: names))
+        assertEq("nothing remembered", nil, screenIndex(named: nil, in: names))
+
+        // --- Shortcut --------------------------------------------------------
+
+        let standard = Shortcut.standard
+        assertEq("default is Control-Option-Command-U", "⌃⌥⌘U", standard.label)
+        assertEq("default is key code 32", UInt32(32), standard.keyCode)
+        assertEq("modifiers in Apple's order",
+                 "⌃⌥⇧⌘K", Shortcut(keyCode: 40, modifiers: cmdMask | shiftMask | optionMask | controlMask, key: "K").label)
+        assertEq("default is allowed", true, standard.isAllowed)
+        assertEq("Command alone is allowed", true, Shortcut(keyCode: 32, modifiers: cmdMask, key: "U").isAllowed)
+        assertEq("Control alone is allowed", true, Shortcut(keyCode: 32, modifiers: controlMask, key: "U").isAllowed)
+        assertEq("Option-Shift only is refused", false,
+                 Shortcut(keyCode: 32, modifiers: optionMask | shiftMask, key: "U").isAllowed)
+        assertEq("no modifiers is refused", false, Shortcut(keyCode: 32, modifiers: 0, key: "U").isAllowed)
+        assertEq("stray bits are dropped", controlMask,
+                 Shortcut(keyCode: 32, modifiers: controlMask | 0x20000, key: "U").modifiers)
+
+        assertEq("default encodes", "32 6400 U", standard.encoded)
+        assertEq("encoding round-trips", standard, Shortcut(encoded: standard.encoded))
+        let spaced = Shortcut(keyCode: 116, modifiers: cmdMask, key: "Page Up")
+        assertEq("a key name with a space round-trips", spaced, Shortcut(encoded: spaced.encoded))
+        assertEq("junk does not decode", nil, Shortcut(encoded: "hello"))
+        assertEq("missing key does not decode", nil, Shortcut(encoded: "32 6400"))
+        assertEq("a refused shortcut does not decode", nil, Shortcut(encoded: "32 2560 U"))
+        assertEq("nothing saved: default", standard, Shortcut.from(saved: nil))
+        assertEq("junk saved: default", standard, Shortcut.from(saved: "32 x U"))
+        assertEq("saved shortcut is used", spaced, Shortcut.from(saved: "116 256 Page Up"))
+
+        // --- keyLabel --------------------------------------------------------
+
+        assertEq("letter shown in capitals", "U", keyLabel(keyCode: 32, characters: "u"))
+        assertEq("digit shown as is", "5", keyLabel(keyCode: 23, characters: "5"))
+        assertEq("space is named", "Space", keyLabel(keyCode: 49, characters: " "))
+        assertEq("function key is named", "F5", keyLabel(keyCode: 96, characters: "\u{F708}"))
+        assertEq("arrow is a symbol", "↑", keyLabel(keyCode: 126, characters: "\u{F700}"))
+
+        // --- clashesWithSystem -----------------------------------------------
+
+        // As CopySymbolicHotKeys reports them: Spotlight is Command-Space,
+        // screenshots Shift-Command-3; the 0x20000 bit is the function key flag.
+        let system = [
+            SystemShortcut(keyCode: 49, modifiers: cmdMask, enabled: true),
+            SystemShortcut(keyCode: 20, modifiers: cmdMask | shiftMask, enabled: true),
+            SystemShortcut(keyCode: 122, modifiers: 0x20000 | cmdMask, enabled: true),
+            SystemShortcut(keyCode: 40, modifiers: cmdMask | controlMask, enabled: false),
+        ]
+        assertEq("default does not clash", false, clashesWithSystem(standard, system))
+        assertEq("Command-Space clashes with Spotlight", true,
+                 clashesWithSystem(Shortcut(keyCode: 49, modifiers: cmdMask, key: "Space"), system))
+        assertEq("same key, different modifiers: no clash", false,
+                 clashesWithSystem(Shortcut(keyCode: 49, modifiers: cmdMask | optionMask, key: "Space"), system))
+        assertEq("function key flag ignored when comparing", true,
+                 clashesWithSystem(Shortcut(keyCode: 122, modifiers: cmdMask, key: "F1"), system))
+        assertEq("a disabled system shortcut does not clash", false,
+                 clashesWithSystem(Shortcut(keyCode: 40, modifiers: cmdMask | controlMask, key: "K"), system))
 
         print("\(pass) passed, \(fail) failed")
         if fail > 0 { exit(1) }
