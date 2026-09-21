@@ -39,7 +39,8 @@ The app stays in the menu bar after the viewer closes, as a small lens icon.
 ```
 click         open the viewer on this screen, or close it if it is open here
               — if it is open on another screen, it moves to this one
-right-click   Camera Settings..., Quit UniFi Viewer
+right-click   Open or Close Viewer, Camera Settings..., Quit UniFi Viewer
+⌃⌥⌘U          open the viewer on the screen it was last on, or close it
 ```
 
 **Closing stops the stream** rather than hiding the window: mpv exits, so a closed viewer
@@ -59,6 +60,26 @@ is (tested on mpv 0.41).
 
 `q`, Cmd+Q, the right-click Quit and the Dock tile's Quit all close the viewer and leave
 the button. Quit the app itself from the button's right-click menu.
+
+## Keyboard shortcut
+
+**Control-Option-Command-U** (⌃⌥⌘U) opens the viewer on the screen it was last on, or
+closes it if it is open. The last screen is wherever the window last was, including after
+a drag, and is remembered across restarts. If that display is not connected, the viewer
+opens on the screen with the pointer.
+
+It works in any app, since it is registered system-wide, and needs no Accessibility
+permission. The default was chosen because every other U combination already does
+something: ⌘U underlines, ⇧⌘U is Finder's Utilities folder, ⌥⌘U is Safari's page source,
+⌃⌘U is Music's lyrics, ⌃⌥U is VoiceOver's rotor, and ⌃U deletes to the start of a line.
+
+To change it, open **Camera Settings** and click the shortcut next to **Menu Bar
+Shortcut**, then press the new one (Esc cancels). **Reset to Default** puts ⌃⌥⌘U back.
+The change applies on Save, with no restart. A new shortcut must include ⌘ or ⌃, so it
+cannot take over ordinary typing, and is refused if macOS already uses it for something
+(System Settings → Keyboard → Keyboard Shortcuts). Other apps' shortcuts cannot be
+checked — macOS lets two apps register the same one without complaint — so if a shortcut
+stops doing what another app expects, pick a different one.
 
 **Build to one place and keep it there.** `make-app.sh` with no argument builds into the
 repo, which is fine until you also copy the result somewhere — two bundles then share a
@@ -193,7 +214,7 @@ If the `rtsps` endpoint itself ever breaks, the other escape hatch is
 ## Tests
 
 ```sh
-./test.sh            # 63 unit tests for the config, URL and menu bar logic — no network needed
+./test.sh            # 97 unit tests for the config, URL, menu bar and shortcut logic — no network needed
 ./test-contract.sh   # pulls a frame from every configured feed
 ```
 
