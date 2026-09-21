@@ -259,6 +259,44 @@ enum MenuBarLogicTests {
                  windowEvents("x scale 1\n1 scale\n2 scale -1\n3 reset\n4 wobble\n", after: 0).events)
         assertEq("empty file", [WindowEvent](), windowEvents("", after: 0).events)
 
+        // --- track --------------------------------------------------------------
+
+        let here = CGPoint(x: 1942, y: 0)
+        let earlier = Placement(offset: CGPoint(x: 1542, y: 400), scale: 0.1638)
+
+        let still = track(saved: earlier, events: [], moved: false, offset: here, sessionScale: 0.1638)
+        assertEq("nothing happened: nothing changes", false, still.changed)
+        assertEq("nothing happened: placement kept", earlier, still.placement)
+
+        let dragged = track(saved: earlier, events: [], moved: true, offset: here, sessionScale: 0.1638)
+        assertEq("drag: new position, same scale", Placement(offset: here, scale: 0.1638), dragged.placement)
+        assertEq("drag: changed", true, dragged.changed)
+
+        let arrived = track(saved: Placement(), events: [], moved: true, offset: here, sessionScale: 0.5212)
+        assertEq("dragged in from another screen: keeps the size it had",
+                 Placement(offset: here, scale: 0.5212), arrived.placement)
+
+        let resized = track(saved: earlier, events: [.scale(0.3)], moved: false, offset: here, sessionScale: 0.1638)
+        assertEq("resize: new scale, corner where it is now", Placement(offset: here, scale: 0.3), resized.placement)
+        assertEq("resize: the session's scale follows", 0.3, resized.sessionScale)
+
+        let resizedThenDragged = track(saved: earlier, events: [.scale(0.3)], moved: true, offset: here, sessionScale: 0.1638)
+        assertEq("resize and drag in one look: both kept",
+                 Placement(offset: here, scale: 0.3), resizedThenDragged.placement)
+
+        let reset = track(saved: earlier, events: [.reset], moved: true, offset: here, sessionScale: 0.1638)
+        assertEq("reset: back to default", Placement(), reset.placement)
+        assertEq("reset: the restart's move is not a drag", true, reset.placement.isDefault)
+        assertEq("reset: reported", true, reset.wasReset)
+        assertEq("reset: session scale cleared", nil, reset.sessionScale)
+
+        let resetThenResized = track(saved: earlier, events: [.reset, .scale(0.4)], moved: false, offset: here, sessionScale: 0.1638)
+        assertEq("reset, then a resize: the resize wins",
+                 Placement(offset: here, scale: 0.4), resetThenResized.placement)
+
+        let resizedThenReset = track(saved: earlier, events: [.scale(0.4), .reset], moved: false, offset: here, sessionScale: 0.1638)
+        assertEq("resize, then a reset: the reset wins", Placement(), resizedThenReset.placement)
+
         print("\(pass) passed, \(fail) failed")
         if fail > 0 { exit(1) }
     }

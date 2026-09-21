@@ -153,3 +153,47 @@ func windowEvents(_ text: String, after seen: Int) -> (events: [WindowEvent], la
     }
     return (events, last)
 }
+
+// What one look at the window changes about a screen's saved placement.
+//
+//   saved         what the screen had saved before this look
+//   events        menu.lua's reports not yet acted on, oldest first
+//   moved         whether the window was dragged since the last look
+//   offset        where its corner is now, as a --geometry offset
+//   sessionScale  the scale the window is at, as far as is known so far
+//
+// A resize keeps the new scale and where the corner is. A reset clears the
+// screen back to mpv's default, and a move reported in the same look is
+// ignored: it is the restart putting the window back, not a drag. A move keeps
+// the new position with the scale the window is at, so a window dragged here
+// from another screen keeps its size.
+struct TrackOutcome: Equatable {
+    var placement: Placement
+    var sessionScale: Double?
+    var changed: Bool
+    var wasReset: Bool
+}
+
+func track(saved: Placement, events: [WindowEvent], moved: Bool, offset: CGPoint,
+           sessionScale: Double?) -> TrackOutcome {
+    var outcome = TrackOutcome(placement: saved, sessionScale: sessionScale, changed: false, wasReset: false)
+    for event in events {
+        switch event {
+        case .scale(let value):
+            outcome.sessionScale = value
+            outcome.placement.scale = value
+            outcome.placement.offset = offset
+        case .reset:
+            outcome.placement = Placement()
+            outcome.sessionScale = nil
+            outcome.wasReset = true
+        }
+        outcome.changed = true
+    }
+    if moved && !outcome.wasReset {
+        outcome.placement.offset = offset
+        outcome.placement.scale = outcome.sessionScale
+        outcome.changed = true
+    }
+    return outcome
+}
