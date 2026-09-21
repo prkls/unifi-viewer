@@ -6,6 +6,8 @@
 //                  close it if it is already open there, or move it there if
 //                  it is open on another screen
 //   right-click    Camera Settings... and Quit
+//   ⌃⌥⌘U           open the viewer on the screen it was last on, or close it
+//                  (the shortcut is changed in Camera Settings)
 //
 // Closing means stopping mpv, not hiding its window, so a closed viewer costs no
 // network and no CPU. Moving means closing and reopening: mpv chooses a screen
@@ -16,11 +18,17 @@
 // window when view.sh opens it — so one signal to the group stops all of it,
 // whatever it happens to be doing at the time.
 //
-// The decisions live in MenuBarLogic.swift, which is tested on its own. Build:
+// The decisions live in MenuBarLogic.swift and Shortcut.swift, which are tested
+// on their own. Build:
 //
-//   swiftc -O -parse-as-library tools/MenuBarLogic.swift tools/MenuBar.swift
+//   swiftc -O -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/MenuBar.swift
 
 import AppKit
+import Carbon.HIToolbox
+
+// Where the viewer was last seen, by display name, so the shortcut can open it
+// there again — also after the app has been quit and reopened.
+let lastScreenDefaultsKey = "lastScreen"
 
 struct Screen {
     let name: String     // what mpv's --screen-name matches
@@ -95,7 +103,13 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     var viewer: pid_t?           // process group of the running viewer
     var settings: pid_t?         // process group of a settings window we opened
     var afterViewerExit: (() -> Void)?
-    var watchers: [pid_t: DispatchSourceProcess] = [:]
+    var watchers: [ObjectIdentifier: DispatchSourceProcess] = [:]
+
+    var shortcut = Shortcut.standard
+    var hotKey: EventHotKeyRef?
+    var shortcutWorks = false
+    var pausedBy: Set<pid_t> = []     // settings windows recording a shortcut
+    var tracker: Timer?               // notes the viewer's screen while it is open
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -107,6 +121,9 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             button.action = #selector(clicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        installShortcutHandler()
+        registerShortcut()
+        listenToSettings()
         // Opening the app is asking to see the cameras, as it was before there
         // was a menu bar button.
         openViewer(on: pointerScreen())
@@ -162,6 +179,18 @@ final class MenuBar: NSObject, NSApplicationDelegate {
 
     func showMenu() {
         let menu = NSMenu()
+        let toggleItem = menu.addItem(withTitle: "Open or Close Viewer", action: #selector(shortcutPressed), keyEquivalent: "")
+        toggleItem.target = self
+        if !shortcutWorks {
+            toggleItem.title += " (shortcut unavailable)"
+        } else if shortcut.key.count == 1 {
+            // Shown the way macOS shows any shortcut, aligned on the right.
+            toggleItem.keyEquivalent = shortcut.key.lowercased()
+            toggleItem.keyEquivalentModifierMask = modifierFlags(shortcut.modifiers)
+        } else {
+            toggleItem.title += "  \(shortcut.label)"
+        }
+        menu.addItem(.separator())
         let settingsItem = menu.addItem(withTitle: "Camera Settings...", action: #selector(openSettings), keyEquivalent: "")
         settingsItem.target = self
         settingsItem.isEnabled = settings == nil
@@ -211,8 +240,16 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         guard viewer == nil else { return }
         guard let pid = spawnGroup(launcher, env: ["VIEW_SCREEN": screen?.name ?? ""]) else { return }
         viewer = pid
+        if let name = screen?.name { remember(name) }
+        // Follows the window if it is dragged to another screen. Only runs while
+        // the viewer is open, so a closed viewer still costs nothing.
+        tracker = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            self.rememberViewerScreen()
+        }
         handOver(to: pid)
         watch(pid) {
+            self.tracker?.invalidate()
+            self.tracker = nil
             self.viewer = nil
             let next = self.afterViewerExit
             self.afterViewerExit = nil
@@ -228,6 +265,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             return
         }
         afterViewerExit = then
+        rememberViewerScreen()
         kill(-pid, SIGTERM)
         // mpv exits within a fraction of a second on SIGTERM. If anything in the
         // group ignores it, do not let a stuck process block the next open.
@@ -293,18 +331,124 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         attempt()
     }
 
+    // Keyed by the source rather than the pid: the same process can be watched
+    // twice, as a settings window we opened and as one recording a shortcut.
+    // waitpid reaps our own children; for anyone else's it does nothing.
     func watch(_ pid: pid_t, onExit: @escaping () -> Void) {
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        let id = ObjectIdentifier(source)
         source.setEventHandler {
             var status: Int32 = 0
-            waitpid(pid, &status, 0)
+            waitpid(pid, &status, WNOHANG)
             source.cancel()
-            self.watchers[pid] = nil
+            self.watchers[id] = nil
             onExit()
         }
-        watchers[pid] = source
+        watchers[id] = source
         source.resume()
     }
+
+    // --- last screen ----------------------------------------------------------
+
+    func remember(_ screenName: String) {
+        if UserDefaults.standard.string(forKey: lastScreenDefaultsKey) != screenName {
+            UserDefaults.standard.set(screenName, forKey: lastScreenDefaultsKey)
+        }
+    }
+
+    func rememberViewerScreen() {
+        let screens = currentScreens()
+        if let i = viewerWindow().flatMap({ screenIndex(forWindow: $0, in: screens.map { $0.bounds }) }) {
+            remember(screens[i].name)
+        }
+    }
+
+    // --- keyboard shortcut --------------------------------------------------
+    //
+    // A Carbon hot key: system-wide, and unlike watching the keyboard it needs
+    // no Accessibility permission. It is still the supported way to do this.
+
+    @objc func shortcutPressed() {
+        if settings != nil {
+            NSSound.beep()
+            return
+        }
+        let screens = currentScreens()
+        guard !screens.isEmpty else { return }
+        let last = screenIndex(named: UserDefaults.standard.string(forKey: lastScreenDefaultsKey),
+                               in: screens.map { $0.name })
+        let pointer = screenIndex(containing: NSEvent.mouseLocation, in: screens.map { $0.frame }) ?? 0
+
+        switch shortcutAction(viewerRunning: viewer != nil, lastScreen: last, pointerScreen: pointer) {
+        case .open(let i):
+            openViewer(on: screens[i])
+        case .close, .move:
+            stopViewer()
+        }
+    }
+
+    func installShortcutHandler() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
+            let me = Unmanaged<MenuBar>.fromOpaque(context!).takeUnretainedValue()
+            me.shortcutPressed()
+            return noErr
+        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
+    }
+
+    // Reads the saved shortcut afresh each time: the settings window writes it
+    // from another process, so what this one has cached may be stale.
+    func registerShortcut() {
+        unregisterShortcut()
+        guard pausedBy.isEmpty else { return }
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        shortcut = Shortcut.from(saved: UserDefaults.standard.string(forKey: shortcutDefaultsKey))
+        let status = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers,
+                                         EventHotKeyID(signature: OSType(0x554E4656), id: 1),  // "UNFV"
+                                         GetApplicationEventTarget(), 0, &hotKey)
+        shortcutWorks = status == noErr
+        if !shortcutWorks {
+            NSLog("unifi-viewer: cannot register %@ (status %d)", shortcut.label, status)
+        }
+    }
+
+    func unregisterShortcut() {
+        if let hotKey = hotKey {
+            UnregisterEventHotKey(hotKey)
+            self.hotKey = nil
+        }
+    }
+
+    func listenToSettings() {
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(forName: .init(shortcutChangedNotification), object: nil, queue: .main) { _ in
+            self.registerShortcut()
+        }
+        center.addObserver(forName: .init(shortcutPausedNotification), object: nil, queue: .main) { note in
+            guard let pid = (note.object as? String).flatMap({ pid_t($0) }) else { return }
+            if self.pausedBy.insert(pid).inserted {
+                self.watch(pid) {
+                    self.pausedBy.remove(pid)
+                    self.registerShortcut()
+                }
+            }
+            self.unregisterShortcut()
+        }
+        center.addObserver(forName: .init(shortcutResumedNotification), object: nil, queue: .main) { note in
+            guard let pid = (note.object as? String).flatMap({ pid_t($0) }) else { return }
+            self.pausedBy.remove(pid)
+            self.registerShortcut()
+        }
+    }
+}
+
+func modifierFlags(_ carbon: UInt32) -> NSEvent.ModifierFlags {
+    var flags: NSEvent.ModifierFlags = []
+    if carbon & controlMask != 0 { flags.insert(.control) }
+    if carbon & optionMask != 0 { flags.insert(.option) }
+    if carbon & shiftMask != 0 { flags.insert(.shift) }
+    if carbon & cmdMask != 0 { flags.insert(.command) }
+    return flags
 }
 
 @main

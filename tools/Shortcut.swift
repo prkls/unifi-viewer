@@ -107,3 +107,16 @@ func clashesWithSystem(_ shortcut: Shortcut, _ system: [SystemShortcut]) -> Bool
         entry.modifiers & modifierMasks == shortcut.modifiers
     }
 }
+
+// How the settings window tells the menu bar button about the shortcut. These
+// are distributed notifications, which reach every process of the same user.
+//
+//   changed   a new shortcut was saved: read it and register it
+//   paused    recording has started: let go of the shortcut, so pressing the
+//             current one records it rather than opening the viewer. The
+//             object is the settings window's pid, so the button can take the
+//             shortcut back when that window goes, however it goes.
+//   resumed   recording has ended: take it back
+let shortcutChangedNotification = "io.github.prkls.unifi-viewer.shortcut-changed"
+let shortcutPausedNotification = "io.github.prkls.unifi-viewer.shortcut-paused"
+let shortcutResumedNotification = "io.github.prkls.unifi-viewer.shortcut-resumed"
