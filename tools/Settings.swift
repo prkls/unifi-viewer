@@ -11,8 +11,15 @@
 // Deliberately does no URL validation: lib.sh already validates, and a second
 // implementation here would be one more thing to keep in step. view.sh reopens
 // this window when what was saved yields no usable feeds.
+//
+// Below the feeds is the menu bar button's keyboard shortcut. It is saved in the
+// app's preferences rather than streams.conf, which is lib.sh's to read, and
+// like the feeds it only changes on Save. Built with Shortcut.swift:
+//
+//   swiftc -O -parse-as-library tools/Shortcut.swift tools/Settings.swift
 
 import AppKit
+import Carbon.HIToolbox
 
 let maxFeeds = 10
 
@@ -60,6 +67,12 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var nameFields: [NSTextField] = []
     var urlFields: [NSTextField] = []
     var window: NSWindow!
+
+    let savedShortcut = Shortcut.from(saved: UserDefaults.standard.string(forKey: shortcutDefaultsKey))
+    lazy var pendingShortcut = savedShortcut
+    var shortcutButton: NSButton!
+    var shortcutNote: NSTextField!
+    var recorder: Any?          // key monitor, set while recording a shortcut
 
     init(path: String) {
         self.path = path
@@ -155,7 +168,8 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let buttonH: CGFloat = 30
         let gap: CGFloat = 12
-        let totalH = pad + buttonH + gap + listH + gap + blurbH + 6 + headingH + pad
+        let shortcutH: CGFloat = 30
+        let totalH = pad + buttonH + gap + shortcutH + gap + listH + gap + blurbH + 6 + headingH + pad
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: totalH))
 
@@ -173,6 +187,29 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scroll.drawsBackground = false
         scroll.documentView = list
         content.addSubview(scroll)
+
+        // Menu bar shortcut row, between the feeds and Save.
+        let rowY = pad + buttonH + gap
+        let shortcutLabel = NSTextField(labelWithString: "Menu Bar Shortcut")
+        shortcutLabel.frame = NSRect(x: pad, y: rowY + 6, width: 130, height: 18)
+        content.addSubview(shortcutLabel)
+
+        shortcutButton = NSButton(title: pendingShortcut.label, target: self, action: #selector(recordShortcut))
+        shortcutButton.bezelStyle = .rounded
+        shortcutButton.frame = NSRect(x: pad + 134, y: rowY, width: 130, height: shortcutH)
+        content.addSubview(shortcutButton)
+
+        let reset = NSButton(title: "Reset to Default", target: self, action: #selector(resetShortcut))
+        reset.bezelStyle = .rounded
+        reset.frame = NSRect(x: pad + 268, y: rowY, width: 140, height: shortcutH)
+        content.addSubview(reset)
+
+        shortcutNote = NSTextField(labelWithString: "")
+        shortcutNote.font = .systemFont(ofSize: 11)
+        shortcutNote.lineBreakMode = .byTruncatingTail
+        shortcutNote.frame = NSRect(x: pad + 416, y: rowY + 7, width: innerW - 416, height: 16)
+        content.addSubview(shortcutNote)
+        showShortcutNote()
 
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancel.bezelStyle = .rounded
@@ -209,6 +246,104 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         a.beginSheetModal(for: window, completionHandler: nil)
     }
 
+    // --- shortcut recording ---------------------------------------------------
+
+    @objc func recordShortcut() {
+        if recorder != nil {
+            stopRecording()
+            return
+        }
+        shortcutButton.title = "Type shortcut…"
+        note("Press the new shortcut, or Esc to cancel.", error: false)
+        post(shortcutPausedNotification)
+        // Swallows every key press while recording, Esc and Return included,
+        // so they neither cancel nor save the window.
+        recorder = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.recorded(event)
+            return nil
+        }
+    }
+
+    func recorded(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection([.control, .option, .shift, .command])
+        if event.keyCode == 53 && flags.isEmpty {       // Esc on its own
+            stopRecording()
+            return
+        }
+
+        var modifiers: UInt32 = 0
+        if flags.contains(.control) { modifiers |= controlMask }
+        if flags.contains(.option) { modifiers |= optionMask }
+        if flags.contains(.shift) { modifiers |= shiftMask }
+        if flags.contains(.command) { modifiers |= cmdMask }
+        // The key as it types with nothing held, so Shift-Command-5 shows as
+        // ⇧⌘5 rather than ⇧⌘%.
+        let key = keyLabel(keyCode: UInt32(event.keyCode),
+                           characters: event.characters(byApplyingModifiers: []) ?? "")
+        let candidate = Shortcut(keyCode: UInt32(event.keyCode), modifiers: modifiers, key: key)
+
+        // Refusals keep recording, so the next try needs no extra click.
+        if key.isEmpty {
+            note("That key cannot be used. Try another.", error: true)
+        } else if !candidate.isAllowed {
+            note("Include ⌘ or ⌃, so the shortcut does not take over typing.", error: true)
+        } else if clashesWithSystem(candidate, systemShortcuts()) {
+            note("\(candidate.label) is a macOS shortcut. Try another.", error: true)
+        } else {
+            pendingShortcut = candidate
+            stopRecording()
+        }
+    }
+
+    func stopRecording() {
+        if let recorder = recorder {
+            NSEvent.removeMonitor(recorder)
+            self.recorder = nil
+            post(shortcutResumedNotification)
+        }
+        shortcutButton.title = pendingShortcut.label
+        showShortcutNote()
+    }
+
+    @objc func resetShortcut() {
+        pendingShortcut = .standard
+        stopRecording()
+    }
+
+    func showShortcutNote() {
+        note(pendingShortcut == savedShortcut ? "" : "Takes effect when you save.", error: false)
+    }
+
+    func note(_ text: String, error: Bool) {
+        shortcutNote.stringValue = text
+        shortcutNote.textColor = error ? .systemRed : .secondaryLabelColor
+    }
+
+    func post(_ name: String) {
+        DistributedNotificationCenter.default().postNotificationName(
+            .init(name), object: String(getpid()), userInfo: nil, deliverImmediately: true)
+    }
+
+    // The shortcuts macOS itself has, enabled or not, from System Settings →
+    // Keyboard → Keyboard Shortcuts. Other apps' shortcuts are not in here, and
+    // macOS offers no way to see them: registering one that another app holds
+    // still succeeds.
+    func systemShortcuts() -> [SystemShortcut] {
+        var list: Unmanaged<CFArray>?
+        guard CopySymbolicHotKeys(&list) == noErr,
+              let entries = list?.takeRetainedValue() as? [[String: Any]]
+        else { return [] }
+        return entries.compactMap { entry in
+            guard let code = entry[kHISymbolicHotKeyCode as String] as? NSNumber,
+                  let modifiers = entry[kHISymbolicHotKeyModifiers as String] as? NSNumber
+            else { return nil }
+            let enabled = (entry[kHISymbolicHotKeyEnabled as String] as? NSNumber)?.boolValue ?? false
+            return SystemShortcut(keyCode: code.uint32Value, modifiers: modifiers.uint32Value, enabled: enabled)
+        }
+    }
+
+    // --- save and cancel ----------------------------------------------------------
+
     @objc func save() {
         var feeds: [Feed] = []
         for row in 0..<maxFeeds {
@@ -237,6 +372,17 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
             alert("Could not save", "\(path)\n\n\(error.localizedDescription)")
             return
         }
+
+        if pendingShortcut != savedShortcut {
+            // Nothing stored means the default, so a reset leaves no trace.
+            if pendingShortcut == .standard {
+                UserDefaults.standard.removeObject(forKey: shortcutDefaultsKey)
+            } else {
+                UserDefaults.standard.set(pendingShortcut.encoded, forKey: shortcutDefaultsKey)
+            }
+            CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+            post(shortcutChangedNotification)
+        }
         exit(0)
     }
 
@@ -250,13 +396,18 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-let args = CommandLine.arguments
-guard args.count >= 2 else {
-    FileHandle.standardError.write("usage: settings <streams.conf path>\n".data(using: .utf8)!)
-    exit(2)
-}
+@main
+enum SettingsMain {
+    static func main() {
+        let args = CommandLine.arguments
+        guard args.count >= 2 else {
+            FileHandle.standardError.write("usage: settings <streams.conf path>\n".data(using: .utf8)!)
+            exit(2)
+        }
 
-let app = NSApplication.shared
-let controller = Controller(path: args[1])
-app.delegate = controller
-app.run()
+        let app = NSApplication.shared
+        let controller = Controller(path: args[1])
+        app.delegate = controller
+        app.run()
+    }
+}
