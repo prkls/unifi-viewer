@@ -234,18 +234,55 @@ enum MenuBarLogicTests {
         assertEq("more than half off the left does not fit", false,
                  offsetFits(CGPoint(x: -3300, y: 570), visible: studioVisible, backing: 2))
 
-        // --- isUserMove ---------------------------------------------------------
+        // --- usable -------------------------------------------------------------
 
-        let before = CGRect(x: 1280, y: 736, width: 640, height: 360)
-        assertEq("dragged: same size, new place", true,
-                 isUserMove(from: before, to: CGRect(x: 1180, y: 636, width: 640, height: 360)))
-        assertEq("standing still is not a move", false, isUserMove(from: before, to: before))
-        assertEq("feed switch re-centring changes size: not a drag", false,
-                 isUserMove(from: before, to: CGRect(x: 1360, y: 596, width: 480, height: 640)))
-        assertEq("resized from the corner: not a drag", false,
-                 isUserMove(from: before, to: CGRect(x: 1280, y: 736, width: 480, height: 270)))
-        assertEq("sub-point jitter is not a move", false,
-                 isUserMove(from: before, to: CGRect(x: 1280.4, y: 736, width: 640, height: 360)))
+        assertEq("a position that fits is kept", placed, usable(placed, visible: studioVisible, backing: 2))
+        assertEq("a position past the edge is dropped, the scale kept", Placement(scale: 0.5),
+                 usable(Placement(offset: CGPoint(x: 9000, y: 150), scale: 0.5), visible: studioVisible, backing: 2))
+
+        // --- hasMoved ---------------------------------------------------------------
+
+        let anchored = Placement(offset: CGPoint(x: 1590, y: 240), scale: 0.24)
+        // Measured: +1590+240 on the built-in puts the corner at 1494,1960.
+        assertEq("where it was put: not moved", false,
+                 hasMoved(CGRect(x: 1494, y: 1960, width: 922, height: 259), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("a feed of another size keeps the corner: not moved", false,
+                 hasMoved(CGRect(x: 1494, y: 1960, width: 240, height: 320), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("dragged: moved", true,
+                 hasMoved(CGRect(x: 1394, y: 2060, width: 922, height: 259), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("half a point is not a move", false,
+                 hasMoved(CGRect(x: 1494.5, y: 1960, width: 922, height: 259), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        // Measured: the opening animation passes through 1501,1960 on the way.
+        assertEq("mid-animation it looks moved; the next look puts it right", true,
+                 hasMoved(CGRect(x: 1501, y: 1960, width: 908, height: 255), from: anchored,
+                          visible: builtinVisible, backing: 2))
+        assertEq("pushed below the menu bar from above the top: moved, so saved as it is", true,
+                 hasMoved(CGRect(x: 1374, y: 1840, width: 922, height: 259),
+                          from: Placement(offset: CGPoint(x: 1350, y: -4)),
+                          visible: builtinVisible, backing: 2))
+
+        // Measured defaults, centred by mpv on each screen.
+        assertEq("centred on the main display: not moved", false,
+                 hasMoved(CGRect(x: 0, y: 466, width: 3200, height: 900), from: Placement(),
+                          visible: studioVisible, backing: 2))
+        assertEq("centred on the built-in: not moved", false,
+                 hasMoved(CGRect(x: 699, y: 2152, width: 1800, height: 506), from: Placement(),
+                          visible: builtinVisible, backing: 2))
+        // The opening animation grows the window about its centre: measured on
+        // the built-in, 1501 + 908/2 and 1494 + 922/2 are both 1955.
+        assertEq("centred window mid-animation: not moved", false,
+                 hasMoved(CGRect(x: 7, y: 468, width: 3186, height: 896), from: Placement(),
+                          visible: studioVisible, backing: 2))
+        assertEq("centred window of another feed: not moved", false,
+                 hasMoved(CGRect(x: 1360, y: 596, width: 480, height: 640), from: Placement(scale: 0.5),
+                          visible: studioVisible, backing: 2))
+        assertEq("centred window dragged: moved", true,
+                 hasMoved(CGRect(x: 100, y: 466, width: 3200, height: 900), from: Placement(),
+                          visible: studioVisible, backing: 2))
 
         // --- windowEvents -------------------------------------------------------
 
@@ -256,7 +293,9 @@ enum MenuBarLogicTests {
         assertEq("nothing new", [WindowEvent](), windowEvents(log, after: 3).events)
         assertEq("nothing new keeps the count", 3, windowEvents(log, after: 3).last)
         assertEq("garbled lines skipped", [WindowEvent.reset],
-                 windowEvents("x scale 1\n1 scale\n2 scale -1\n3 reset\n4 wobble\n", after: 0).events)
+                 windowEvents("x scale 1\n1 scale\n2 scale -1\n3 reset\n4 wobble\n5 feed x\n", after: 0).events)
+        assertEq("feed switches read", [WindowEvent.feed(2), .scale(0.5)],
+                 windowEvents("1 feed 2\n2 scale 0.5\n", after: 0).events)
         assertEq("empty file", [WindowEvent](), windowEvents("", after: 0).events)
 
         // --- track --------------------------------------------------------------
@@ -296,6 +335,16 @@ enum MenuBarLogicTests {
 
         let resizedThenReset = track(saved: earlier, events: [.scale(0.4), .reset], moved: false, offset: here, sessionScale: 0.1638)
         assertEq("resize, then a reset: the reset wins", Placement(), resizedThenReset.placement)
+
+        let fed = track(saved: earlier, events: [.feed(2)], moved: false, offset: here, sessionScale: 0.1638)
+        assertEq("a feed switch changes nothing saved", false, fed.changed)
+
+        // --- trimmedLog -----------------------------------------------------------
+
+        assertEq("short log kept whole", "a\nb\n", trimmedLog("a\nb\n", keeping: 3))
+        assertEq("long log keeps its last lines", "c\nd\ne\n", trimmedLog("a\nb\nc\nd\ne\n", keeping: 3))
+        assertEq("exactly at the limit: unchanged", "a\nb\nc\n", trimmedLog("a\nb\nc\n", keeping: 3))
+        assertEq("empty log", "", trimmedLog("", keeping: 3))
 
         print("\(pass) passed, \(fail) failed")
         if fail > 0 { exit(1) }
