@@ -1,7 +1,7 @@
 #!/bin/bash
 # Open a borderless mpv window on your UniFi Protect cameras.
 #
-#   ./view.sh [n]        # start on feed n (1-10), default the first
+#   ./view.sh [n]        # start on feed n (1-10), default the one last watched
 #
 # Keys 1-9 and 0 select feeds in config order. Right-click for the menu, q to
 # quit. Reconnects on its own if a stream drops.
@@ -24,6 +24,11 @@ MENU_LUA="./tools/menu.lua"
 # bundle; from a terminal there is no window to show, so we print instead.
 MPV_BIN="${MPV_BIN:-mpv}"
 SETTINGS_BIN="${SETTINGS_BIN:-}"
+
+# Which display to open on, by the name macOS gives it ("Studio Display"). The
+# menu bar button sets this to the screen that was clicked. Empty means mpv's
+# own choice, which is the display the pointer is on.
+VIEW_SCREEN="${VIEW_SCREEN:-}"
 
 # Right-click menu text size, in points. Override per-run if it does not suit
 # your display: MENU_FONT_SIZE=22 ./view.sh
@@ -58,6 +63,10 @@ feed_field() {
 
 first_index() {
     printf '%s\n' "$FEED_LINES" | awk -F'\t' 'NR == 1 { print $1 }'
+}
+
+feed_count() {
+    printf '%s\n' "$FEED_LINES" | awk 'END { print NR }'
 }
 
 has_feed() {
@@ -128,7 +137,9 @@ if [ -n "$start_index" ]; then
     esac
     has_feed "$start_index" || { echo "view.sh: no feed $start_index in $CONF" >&2; exit 1; }
 else
-    start_index=$(first_index)
+    # Reopening from the menu bar should come back to what was on screen, not
+    # to the first feed every time.
+    start_index=$(resume_index "$(cat "$STATE" 2>/dev/null)" "$(feed_count)")
 fi
 
 echo "$start_index" >"$STATE"
@@ -172,6 +183,10 @@ while true; do
     # every switch. scale_with_window=no scales by display DPI instead, so it
     # stays one physical size whatever the stream resolution.
     #
+    # --screen-name only chooses where the window first opens. mpv accepts a
+    # change to it at runtime but does not move the window (tested on 0.41), so
+    # the menu bar button moves the viewer by restarting it on the other screen.
+    #
     # --msg-level=ffmpeg=fatal hides libavcodec's per-frame decoder chatter.
     # Joining a live HEVC stream part-way through a GOP means the first frames
     # reference a keyframe we never received, so the decoder logs "Could not
@@ -195,6 +210,7 @@ while true; do
         --osc=no \
         --window-scale=1 \
         --autofit-larger=100%x100% \
+        --screen-name="$VIEW_SCREEN" \
         --ontop \
         --keep-open=no \
         --title="UniFi Viewer" \
