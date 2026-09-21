@@ -118,6 +118,26 @@ feed_key() {
     esac
 }
 
+# resume_index <saved> <count>
+#
+# Which feed to open when none was asked for: the one last watched, if it is
+# still configured, otherwise the first. <saved> is whatever the state file
+# held, so it may be empty or junk; <count> is how many feeds are configured.
+# Feeds are always numbered 1..count, since feeds_load renumbers past any it
+# skips.
+resume_index() {
+    case "$1" in
+        ''|*[!0-9]*) printf '1' ;;
+        *)
+            if [ "$1" -ge 1 ] && [ "$1" -le "$2" ]; then
+                printf '%s' "$1"
+            else
+                printf '1'
+            fi
+            ;;
+    esac
+}
+
 # feeds_load <config-file>
 #
 # Read streams.conf and emit one "<index>\t<name>\t<url>" line per usable feed.

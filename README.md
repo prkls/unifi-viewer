@@ -1,14 +1,14 @@
 # unifi-viewer
 
 A borderless mpv window showing your UniFi Protect cameras on macOS. Up to ten named feeds,
-switched with a number key or the right-click menu. LAN only — it talks to the UDM Pro
-directly and never leaves the network.
+switched with a number key or the right-click menu, and a menu bar button that opens and
+closes the viewer. LAN only — it talks to the UDM Pro directly and never leaves the network.
 
 ```
 1-9, 0        select a feed, in config order
 r             reload the current feed (back to live)
 ,             camera settings
-q             quit
+q             close the viewer (quit, from a terminal)
 right-click   menu of feed names
 ```
 
@@ -27,9 +27,38 @@ brew install mpv
 Double-click it. On first launch, with nothing configured, it opens the settings window.
 Reopen it any time with `,` or from the right-click menu.
 
-The settings window is compiled at build time, so `make-app.sh` needs `swiftc` from the
-Xcode command line tools (`xcode-select --install`). Without it the app still builds and
-runs; you just configure feeds by editing `streams.conf` by hand.
+The settings window and the menu bar button are compiled at build time, so `make-app.sh`
+needs `swiftc` from the Xcode command line tools (`xcode-select --install`). Without it the
+app still builds and runs, with neither: you configure feeds by editing `streams.conf` by
+hand, and the app quits when the viewer closes.
+
+## Menu bar button
+
+The app stays in the menu bar after the viewer closes, as a small lens icon.
+
+```
+click         open the viewer on this screen, or close it if it is open here
+              — if it is open on another screen, it moves to this one
+right-click   Camera Settings..., Quit UniFi Viewer
+```
+
+**Closing stops the stream** rather than hiding the window: mpv exits, so a closed viewer
+uses no network and no CPU. What stays running is the menu bar button, at about 12 MB of
+memory. The Dock icon is there only while the viewer is open.
+
+**Opening shows the window at once**, with the "Loading" panel, and the picture follows
+once Protect has set up the stream — the same wait as switching feeds. The viewer comes
+back on the feed you were last watching.
+
+**The screen is the one whose menu bar you clicked.** That needs each display to have its
+own menu bar — System Settings → Desktop & Dock → "Displays have separate Spaces", on by
+default. With it off there is one menu bar, on the main display, and the viewer opens there.
+Moving to another screen closes and reopens the viewer, because mpv only chooses a screen
+when its window is created; it accepts a change at runtime but leaves the window where it
+is (tested on mpv 0.41).
+
+`q`, Cmd+Q, the right-click Quit and the Dock tile's Quit all close the viewer and leave
+the button. Quit the app itself from the button's right-click menu.
 
 **Build to one place and keep it there.** `make-app.sh` with no argument builds into the
 repo, which is fine until you also copy the result somewhere — two bundles then share a
@@ -41,13 +70,13 @@ The bundle is generated rather than committed. Rebuild it if you move the repo, 
 launcher holds an absolute path to `view.sh`, and after a `brew upgrade mpv`, since it
 holds a copy of the mpv binary.
 
-Logs go to `~/.cache/unifi-viewer/app.log`, truncated on each launch.
+Logs go to `~/.cache/unifi-viewer/app.log`, truncated each time the viewer opens.
 
 ## From a terminal
 
 ```sh
 cp streams.conf.example streams.conf   # then add your feeds
-./view.sh          # first feed
+./view.sh          # the feed last watched, or the first
 ./view.sh 3        # third feed
 ```
 
@@ -164,7 +193,7 @@ If the `rtsps` endpoint itself ever breaks, the other escape hatch is
 ## Tests
 
 ```sh
-./test.sh            # 38 unit tests for the config and URL logic — no network needed
+./test.sh            # 63 unit tests for the config, URL and menu bar logic — no network needed
 ./test-contract.sh   # pulls a frame from every configured feed
 ```
 
