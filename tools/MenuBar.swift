@@ -42,7 +42,7 @@ let placementsDefaultsKey = "placements"
 let cacheDir = (ProcessInfo.processInfo.environment["XDG_CACHE_HOME"] ?? NSHomeDirectory() + "/.cache")
     + "/unifi-viewer"
 let placementFile = cacheDir + "/placement"   // written here, read by view.sh
-let windowEventsFile = cacheDir + "/window"   // written by menu.lua, read here
+let mpvSocket = cacheDir + "/mpv.sock"        // mpv listens here; view.sh opens it
 let placementLog = cacheDir + "/placement.log"
 
 // A record of every open, look, report and save, for working out afterwards
@@ -176,14 +176,20 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     var hotKey: EventHotKeyRef?
     var shortcutWorks = false
     var pausedBy: Set<pid_t> = []     // settings windows recording a shortcut
-    var reportWatch: DispatchSourceFileSystemObject?  // menu.lua's reports, as they are written
+    var viewerActions: [ViewerAction] = []   // what the viewer menu's items do
 
-    // About the window of the viewer now open.
-    var sessionScale: Double?         // the scale it is at, nil for mpv's own
-    var sessionVideo: CGSize?         // the size of the feed showing, from menu.lua
+    // About the viewer now open.
+    var mpv: MPVClient?               // the socket mpv listens on
+    var feeds: [Feed] = []            // what view.sh wrote for this session
+    var playing: Int?                 // the feed showing, by its number
+    var sessionScale: Double?         // the scale the window is at, nil for mpv's own
+    var sessionVideo: CGSize?         // the size of the feed showing; nil while one opens
+    var pendingVideo: CGSize?         // its size as mpv announced it, before the window changed
     var lastSeen: (frame: CGRect, screen: Screen)?  // for the final save, once it has gone
     var mouseUpMonitor: Any?          // a look at the end of every drag or resize
-    var seenEvents = 0                // menu.lua lines already acted on
+    var rightClickMonitor: Any?       // the viewer's own menu
+    var loadingShown = false
+    var placedOnce = false            // mpv's start position has done its job
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -332,22 +338,26 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         trimLog()
         record("open on \(screen?.name ?? "the pointer's screen"): \(placement.encoded), feed \(currentFeed())")
 
-        // A fresh, empty file for menu.lua's reports, watched so each one is
-        // acted on as soon as it is written. menu.lua appends to it, so the
-        // watch follows the same file for the whole session, restarts included.
-        try? FileManager.default.removeItem(atPath: windowEventsFile)
-        FileManager.default.createFile(atPath: windowEventsFile, contents: nil)
-        seenEvents = 0
         writePlacementFile(screen?.name, placement)
         sessionScale = placement.scale
         sessionVideo = nil
         lastSeen = nil
+        feeds = loadFeeds()
+        playing = nil
+        loadingShown = false
+        placedOnce = false
 
         guard let pid = spawnGroup(launcher) else { return }
         viewer = pid
         if let name = screen?.name { remember(name) }
-        // Nothing polls the window. mpv reports a resize the moment it happens,
-        // through menu.lua; a move has no report without Accessibility
+        // mpv is driven over its socket from here on: the menu, the "Loading"
+        // panel, feed switches and the properties mpv's own menu bar would
+        // otherwise change. That is what lets the viewer run an mpv with no
+        // scripting engine in it.
+        connectToViewer()
+
+        // Nothing polls the window. mpv reports a feed's size over the socket
+        // as it starts showing; a move has no report without Accessibility
         // permission, but every drag ends with the mouse button coming up, and
         // watching for that anywhere needs no permission — Apple restricts
         // only key events for global monitors. Looks come from those two, and
@@ -356,29 +366,28 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         // place, such as one tiled against a screen edge. A move made with the
         // keyboard alone is seen at the next click anywhere, or on closing
         // from the menu bar or the shortcut.
-        watchReports()
         mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { _ in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.look("mouse up") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.look("mouse up, settled") }
         }
+        // The viewer's own menu, which used to be drawn inside the video by
+        // menu.lua and is now a plain macOS menu.
+        rightClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseDown) { _ in
+            self.showViewerMenu()
+        }
         handOver(to: pid)
         watch(pid) {
-            self.reportWatch?.cancel()
-            self.reportWatch = nil
-            if let monitor = self.mouseUpMonitor {
+            self.mpv?.stop()
+            self.mpv = nil
+            for monitor in [self.mouseUpMonitor, self.rightClickMonitor].compactMap({ $0 }) {
                 NSEvent.removeMonitor(monitor)
-                self.mouseUpMonitor = nil
             }
+            self.mouseUpMonitor = nil
+            self.rightClickMonitor = nil
             self.viewer = nil
-            // A resize menu.lua reported after the last look, as mpv shut down,
-            // is still in the file: act on it where the window was last seen.
-            if let seen = self.lastSeen {
-                self.apply(frame: seen.frame, on: seen.screen, judge: false, why: "closed")
-            }
             record("closed")
             // Nothing left to place; a later run from a terminal gets defaults.
             try? FileManager.default.removeItem(atPath: placementFile)
-            try? FileManager.default.removeItem(atPath: windowEventsFile)
             let next = self.afterViewerExit
             self.afterViewerExit = nil
             next?()
@@ -533,21 +542,213 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         return usable(savedPlacement(screen.name), visible: screen.visible, backing: screen.backing)
     }
 
-    func watchReports() {
-        let fd = open(windowEventsFile, O_EVTONLY)
-        guard fd >= 0 else {
-            record("cannot watch \(windowEventsFile)")
+    // --- the viewer over its socket -------------------------------------------
+
+    func connectToViewer() {
+        let client = MPVClient(path: mpvSocket,
+                               onConnect: { [weak self] in self?.viewerConnected() },
+                               onMessage: { [weak self] in self?.handle($0) })
+        mpv = client
+        client.start()
+    }
+
+    func viewerConnected() {
+        record("connected to the viewer")
+        // pause, loop-file and speed are watched because mpv's macOS menu bar
+        // sends those commands straight to mpv, where no key binding can catch
+        // them: pausing a live camera leaves a stale frame with no way back,
+        // and turning off loop-file would make the app exit silently on the
+        // next dropped stream.
+        mpv?.observe(["pause", "loop-file", "speed", "path", "video-params"])
+        if let scale = sessionScale {
+            mpv?.send(["set_property", "window-scale", scale])
+        }
+    }
+
+    func handle(_ message: MPVMessage) {
+        switch message {
+        case .property(let name, let value):
+            switch name {
+            case "pause":
+                if value == .bool(true) { mpv?.send(["set_property", "pause", false]) }
+            case "loop-file":
+                if value != .text("inf") { mpv?.send(["set_property", "loop-file", "inf"]) }
+            case "speed":
+                if let speed = value.number, abs(speed - 1) > 0.001 {
+                    mpv?.send(["set_property", "speed", 1.0])
+                }
+            case "path":
+                feedStarted(url: value.text)
+            case "video-params":
+                // Only noted here. mpv knows a feed's size before it has
+                // resized the window for it, and judging the old window
+                // against the new size called that a resize by hand.
+                if case .size(let width, let height) = value {
+                    pendingVideo = CGSize(width: width, height: height)
+                }
+            default:
+                break
+            }
+        case .message(let args):
+            record("viewer says: \(args.joined(separator: " "))")
+            switch args.first {
+            case "unifi-reload": reload()
+            case "unifi-reset": resetWindow()
+            default: break
+            }
+        case .other(let event):
+            switch event {
+            case "playback-restart":
+                // Frames are arriving, so the window is now sized for this
+                // feed: its size can be judged against again. The panel has
+                // done its job, and so has the position mpv was started at —
+                // clearing that stops mpv putting a window you have moved back
+                // where it opened.
+                sessionVideo = pendingVideo
+                hideLoading()
+                if !placedOnce {
+                    placedOnce = true
+                    mpv?.send(["set_property", "geometry", ""])
+                }
+            case "end-file":
+                // A dropped stream reconnects in place; say so rather than
+                // leaving the last frame looking live.
+                if let feed = feeds.first(where: { $0.index == playing }) { showLoading(feed.name) }
+            default:
+                break
+            }
+        case .reply:
+            break
+        }
+    }
+
+    // --- feeds ----------------------------------------------------------------
+
+    struct Feed {
+        var index: Int
+        var key: String
+        var name: String
+        var url: String
+    }
+
+    // The feeds view.sh wrote for this session, as "<index>\t<key>\t<name>\t<url>".
+    func loadFeeds() -> [Feed] {
+        let text = (try? String(contentsOfFile: cacheDir + "/feeds", encoding: .utf8)) ?? ""
+        return text.split(separator: "\n").compactMap { line in
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard f.count >= 4, let index = Int(f[0]) else { return nil }
+            return Feed(index: index, key: String(f[1]), name: String(f[2]), url: String(f[3]))
+        }
+    }
+
+    func feedStarted(url: String?) {
+        guard let url = url, let feed = feeds.first(where: { $0.url == url }) else { return }
+        if playing != feed.index {
+            playing = feed.index
+            record("feed \(feed.index) \(feed.name)")
+            try? "\(feed.index)\n".write(toFile: cacheDir + "/feed", atomically: true, encoding: .utf8)
+        }
+        // The window keeps the last feed's size until this one shows, so there
+        // is nothing to judge a resize against in the meantime.
+        sessionVideo = nil
+        pendingVideo = nil
+        showLoading(feed.name)
+    }
+
+    func select(feed index: Int) {
+        guard let feed = feeds.first(where: { $0.index == index }), feed.index != playing else { return }
+        record("opening feed \(feed.index) \(feed.name)")
+        showLoading(feed.name)
+        mpv?.send(["loadfile", feed.url])
+    }
+
+    // Reopening the stream is the only real "back to live" for RTSP: a live
+    // stream cannot be seeked, so a reload is what drops whatever was buffered.
+    func reload() {
+        guard let feed = feeds.first(where: { $0.index == playing }) else { return }
+        record("reloading feed \(feed.index) \(feed.name)")
+        showLoading(feed.name)
+        mpv?.send(["loadfile", feed.url])
+    }
+
+    // --- the "Loading" panel ---------------------------------------------------
+
+    func showLoading(_ name: String) {
+        let size = sessionVideo ?? CGSize(width: 1920, height: 1080)
+        let ass = loadingOverlay(feed: name, width: Int(size.width), height: Int(size.height))
+        mpv?.send(["osd-overlay", 1, "ass-events", ass, Int(size.width), Int(size.height), 0, false, false])
+        loadingShown = true
+    }
+
+    func hideLoading() {
+        guard loadingShown else { return }
+        mpv?.send(["osd-overlay", 1, "none", ""])
+        loadingShown = false
+    }
+
+    // --- the viewer's menu -----------------------------------------------------
+
+    // A right-click anywhere is offered to the viewer: if the pointer is over
+    // its window, this is the menu that used to be drawn inside the video.
+    func showViewerMenu() {
+        guard viewer != nil, let window = viewerWindow() else {
+            record("right-click: no viewer window")
             return
         }
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend],
-                                                               queue: .main)
-        // Only noted, not judged: a feed's size is reported as it starts
-        // showing, which can be a moment before mpv has resized the window
-        // for it, and judging then would take mpv's resize for yours.
-        source.setEventHandler { self.look("report", judge: false) }
-        source.setCancelHandler { close(fd) }
-        reportWatch = source
-        source.resume()
+        let pointer = NSEvent.mouseLocation
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        let inQuartz = CGPoint(x: pointer.x, y: mainHeight - pointer.y)
+        guard window.contains(inQuartz) else {
+            record("right-click at \(Int(inQuartz.x)),\(Int(inQuartz.y)): outside \(describe(window))")
+            return
+        }
+        record("right-click at \(Int(inQuartz.x)),\(Int(inQuartz.y)): menu")
+
+        let items = viewerMenu(feeds: feeds.map { (index: $0.index, key: $0.key, name: $0.name) },
+                               current: playing)
+        viewerActions = items.compactMap { $0.action }
+        let menu = NSMenu()
+        var actionIndex = 0
+        for item in items {
+            if item.action == nil {
+                menu.addItem(.separator())
+                continue
+            }
+            let entry = menu.addItem(withTitle: item.title, action: #selector(viewerMenuPicked(_:)),
+                                     keyEquivalent: "")
+            entry.target = self
+            entry.tag = actionIndex
+            entry.state = item.checked ? .on : .off
+            // The key that does the same thing, shown as mpv's menu did.
+            entry.attributedTitle = nil
+            entry.toolTip = item.shortcut.isEmpty ? nil : "Key: \(item.shortcut)"
+            actionIndex += 1
+        }
+        menu.popUp(positioning: nil, at: pointer, in: nil)
+    }
+
+    @objc func viewerMenuPicked(_ item: NSMenuItem) {
+        guard item.tag >= 0 && item.tag < viewerActions.count else { return }
+        switch viewerActions[item.tag] {
+        case .selectFeed(let index): select(feed: index)
+        case .reload: reload()
+        case .settings: mpv?.send(["quit", 20])      // view.sh opens the settings window
+        case .quit: mpv?.send(["quit", 5])
+        }
+    }
+
+    // Back to mpv's own size and position on this screen, forgetting what the
+    // screen had saved. Done by restarting the viewer — quit 21 is view.sh's
+    // signal — because mpv 0.41 puts a window moved while it runs in the wrong
+    // place on any display but the main one.
+    func resetWindow() {
+        record("reset asked for")
+        if let seen = lastSeen {
+            record("reset on \(seen.screen.name)")
+            apply(frame: seen.frame, on: seen.screen, judge: false, why: "reset", reset: true)
+        }
+        sessionScale = nil
+        mpv?.send(["quit", 21])
     }
 
     // Which screen the window is on, and whether it has been moved or resized
@@ -568,24 +769,14 @@ final class MenuBar: NSObject, NSApplicationDelegate {
 
     // Act on menu.lua's new reports, and when judging, on a move or resize,
     // for a window at `frame`.
-    func apply(frame: CGRect, on screen: Screen, judge: Bool, why: String) {
-        let text = (try? String(contentsOfFile: windowEventsFile, encoding: .utf8)) ?? ""
-        let (events, last) = windowEvents(text, after: seenEvents)
-        seenEvents = last
-        for event in events {
-            switch event {
-            case .video(let width, let height): record("report: feed size \(width)x\(height)")
-            case .reset: record("report: reset")
-            case .feed(let index): record("report: feed \(index)")
-            }
-        }
-        sessionVideo = latestVideo(events, else: sessionVideo)
-
+    func apply(frame: CGRect, on screen: Screen, judge: Bool, why: String, reset: Bool = false) {
         var moved = false
         var resizedTo: Double? = nil
-        if judge && !events.contains(.reset) {
+        if judge && !reset {
             moved = hasMoved(frame, from: placementIn(effect: screen),
                              visible: screen.visible, backing: screen.backing)
+            // Nothing to judge a size against while a feed is still opening:
+            // the window keeps the last feed's size until the new one shows.
             if let video = sessionVideo {
                 resizedTo = resizedScale(window: frame, video: video, scale: sessionScale,
                                          visible: screen.visible, backing: screen.backing)
@@ -597,13 +788,18 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         record(seen)
 
         let before = savedPlacement(screen.name)
-        let outcome = track(saved: before, events: events, moved: moved, resizedTo: resizedTo,
+        let outcome = track(saved: before, reset: reset, moved: moved, resizedTo: resizedTo,
                             offset: offset(of: frame, on: screen), sessionScale: sessionScale)
         sessionScale = outcome.sessionScale
         if outcome.changed && outcome.placement != before {
             record("save \(screen.name): \(before.encoded) -> \(outcome.placement.encoded) (\(why))")
             save(outcome.placement, for: screen.name)
             writePlacementFile(screen.name, outcome.placement)
+        }
+        // A resize is the window's new size for the rest of the session: tell
+        // mpv, so the next feed opens at it rather than back at full size.
+        if let scale = resizedTo {
+            mpv?.send(["set_property", "window-scale", scale])
         }
     }
 
