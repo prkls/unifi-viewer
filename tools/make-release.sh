@@ -23,7 +23,8 @@ REPO=$(pwd -P)
 APP_NAME="UniFi Viewer"
 STAGE="$REPO/build/release"
 APP="$STAGE/$APP_NAME.app"
-DMG="$STAGE/$APP_NAME.dmg"
+# No space in the file name: it becomes part of the download URL.
+DMG="$STAGE/UniFi-Viewer.dmg"
 NOTARY_PROFILE=${NOTARY_PROFILE:-unifi-viewer}
 NOTARIZE=yes
 SIGN=yes
