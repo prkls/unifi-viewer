@@ -6,6 +6,10 @@ UniFi Viewer.app/
 
 # mpv's source and build, from tools/build-mpv.sh
 build/
+
+# The release cookbook, which names the signing identity and the Apple account.
+# It is kept in the private archive repo instead.
+RELEASING.md
 *.iconset/
 *.icns
 
