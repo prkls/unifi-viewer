@@ -1,6 +1,8 @@
-// Unit tests for MenuBarLogic.swift, Shortcut.swift and Placement.swift. Run by test.sh:
+// Unit tests for MenuBarLogic.swift, Shortcut.swift, Placement.swift and MPV.swift.
+// Run by test.sh:
 //
-//   swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/Placement.swift tools/MenuBarLogicTests.swift
+//   swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/Placement.swift \\
+//       tools/MPV.swift tools/MenuBarLogicTests.swift
 //
 // Plain assertions, no XCTest, to match test.sh. Prints one line per failure
 // and a final "N passed, M failed" line that test.sh adds to its own totals.
@@ -284,18 +286,72 @@ enum MenuBarLogicTests {
                  hasMoved(CGRect(x: 100, y: 466, width: 3200, height: 900), from: Placement(),
                           visible: studioVisible, backing: 2))
 
-        // --- windowEvents -------------------------------------------------------
+        // --- parseMPV ------------------------------------------------------------
 
-        let log = "1 video 7680 2160\n2 reset\n3 feed 2\n4 video 1920 2560\n"
-        assertEq("all events read", [WindowEvent.video(7680, 2160), .reset, .feed(2), .video(1920, 2560)],
-                 windowEvents(log, after: 0).events)
-        assertEq("last sequence number", 4, windowEvents(log, after: 0).last)
-        assertEq("only events not yet seen", [WindowEvent.video(1920, 2560)], windowEvents(log, after: 3).events)
-        assertEq("nothing new", [WindowEvent](), windowEvents(log, after: 4).events)
-        assertEq("nothing new keeps the count", 4, windowEvents(log, after: 4).last)
-        assertEq("garbled lines skipped", [WindowEvent.reset],
-                 windowEvents("x video 1 1\n1 video 7680\n2 video 0 5\n3 reset\n4 wobble\n5 feed x\n", after: 0).events)
-        assertEq("empty file", [WindowEvent](), windowEvents("", after: 0).events)
+        assertEq("a watched property changing",
+                 MPVMessage.property(name: "pause", value: .bool(true)),
+                 parseMPV("{\"event\":\"property-change\",\"id\":1,\"name\":\"pause\",\"data\":true}"))
+        assertEq("a number property",
+                 MPVMessage.property(name: "current-window-scale", value: .number(0.75)),
+                 parseMPV("{\"event\":\"property-change\",\"id\":3,\"name\":\"current-window-scale\",\"data\":0.75}"))
+        assertEq("the feed now playing",
+                 MPVMessage.property(name: "path", value: .text("rtsps://192.168.0.1:7441/aaa")),
+                 parseMPV("{\"event\":\"property-change\",\"id\":4,\"name\":\"path\",\"data\":\"rtsps://192.168.0.1:7441/aaa\"}"))
+        // Measured: what mpv sends for the Driveway feed.
+        assertEq("the feed's size, from video-params",
+                 MPVMessage.property(name: "video-params", value: .size(width: 7680, height: 2160)),
+                 parseMPV("{\"event\":\"property-change\",\"id\":5,\"name\":\"video-params\",\"data\":{\"w\":7680,\"h\":2160,\"dw\":7680,\"dh\":2160}}"))
+        assertEq("a property with no value yet",
+                 MPVMessage.property(name: "video-params", value: .none),
+                 parseMPV("{\"event\":\"property-change\",\"id\":5,\"name\":\"video-params\",\"data\":null}"))
+        // Measured: a key in the viewer running "script-message unifi-reload".
+        assertEq("a key in the viewer reaching us",
+                 MPVMessage.message(args: ["unifi-reload"]),
+                 parseMPV("{\"event\":\"client-message\",\"args\":[\"unifi-reload\"]}"))
+        assertEq("a reply to something we asked",
+                 MPVMessage.reply(id: 7, value: .text("ok"), error: "success"),
+                 parseMPV("{\"data\":\"ok\",\"request_id\":7,\"error\":\"success\"}"))
+        assertEq("an event we do not care about",
+                 MPVMessage.other(event: "playback-restart"),
+                 parseMPV("{\"event\":\"playback-restart\"}"))
+        assertEq("a blank line", nil, parseMPV(""))
+        assertEq("a half-written line", nil, parseMPV("{\"event\":\"prop"))
+
+        // --- mpvRequest ----------------------------------------------------------
+
+        assertEq("a command is one line of JSON",
+                 "{\"command\":[\"set_property\",\"pause\",false],\"request_id\":1}\n",
+                 mpvRequest(["set_property", "pause", false], id: 1))
+        assertEq("a command with numbers",
+                 "{\"command\":[\"observe_property\",2,\"path\"],\"request_id\":9}\n",
+                 mpvRequest(["observe_property", 2, "path"], id: 9))
+        assertEq("nothing unencodable is sent", nil, mpvRequest(["loadfile", Double.nan], id: 1))
+
+        // --- viewerMenu ----------------------------------------------------------
+
+        let feeds = [(index: 1, key: "1", name: "Driveway"), (index: 2, key: "2", name: "Door")]
+        let menu = viewerMenu(feeds: feeds, current: 2)
+        assertEq("a feed for each, then reload, settings and quit", 7, menu.count)
+        assertEq("the feed playing is ticked", true, menu[1].checked)
+        assertEq("the other feed is not", false, menu[0].checked)
+        assertEq("choosing a feed selects it", ViewerAction.selectFeed(1), menu[0].action)
+        assertEq("the key is shown beside the name", "2", menu[1].shortcut)
+        assertEq("a separator before reload", ViewerMenuItem.separator, menu[2])
+        assertEq("reload is there", ViewerAction.reload, menu[3].action)
+        assertEq("settings is there", ViewerAction.settings, menu[4].action)
+        assertEq("quit is last", ViewerAction.quit, menu[6].action)
+        let empty = viewerMenu(feeds: [], current: nil)
+        assertEq("with no feeds, no feed items and no reload", 3, empty.count)
+        assertEq("with no feeds, settings still there", ViewerAction.settings, empty[0].action)
+
+        // --- loadingOverlay ------------------------------------------------------
+
+        let panel = loadingOverlay(feed: "Driveway", width: 1280, height: 720)
+        assertEq("names the feed being opened", true, panel.contains("Loading Driveway"))
+        assertEq("covers the frame", true, panel.contains("m 0 0 l 1280 0 l 1280 720 l 0 720"))
+        assertEq("text sized off the frame height", true, panel.contains("\\fs72}"))
+        assertEq("a small frame still gets readable text", true,
+                 loadingOverlay(feed: "Door", width: 320, height: 180).contains("\\fs22}"))
 
         // --- expectedSize and resizedScale ------------------------------------
 
@@ -341,27 +397,24 @@ enum MenuBarLogicTests {
                  resizedScale(window: CGRect(x: 300, y: 1900, width: 1799, height: 506), video: driveway,
                               scale: 0.625, visible: builtinVisible, backing: 2))
 
-        assertEq("latest video report wins", CGSize(width: 1920, height: 2560),
-                 latestVideo([.video(7680, 2160), .feed(2), .video(1920, 2560)], else: nil))
-        assertEq("no reports: what was known is kept", driveway, latestVideo([], else: driveway))
-        assertEq("a feed switch forgets the size until the new feed shows", nil,
-                 latestVideo([.feed(2)], else: driveway))
-        assertEq("a reset forgets the size too", nil, latestVideo([.reset], else: driveway))
-        // Measured: while Door was still connecting, the window kept
-        // Driveway's 629x177 and was judged against Door's size.
-        assertEq("while a feed opens there is nothing to judge against: no resize", nil,
-                 latestVideo([.feed(2)], else: driveway).flatMap {
-                     resizedScale(window: CGRect(x: 1590, y: 2062, width: 629, height: 177), video: $0,
-                                  scale: 0.1638, visible: builtinVisible, backing: 2)
-                 })
+        // Measured: while Door was still connecting, the window still had
+        // Driveway's 629x177. Judged against Door's size that looks like a
+        // resize, which is why the helper forgets the feed size at a switch
+        // and judges nothing until the new feed is showing.
+        assertEq("the stale-size trap: judged against the incoming feed, it looks resized", true,
+                 resizedScale(window: CGRect(x: 1590, y: 2062, width: 629, height: 177), video: door,
+                              scale: 0.1638, visible: builtinVisible, backing: 2) != nil)
+        assertEq("judged against the feed actually showing, it is not", nil,
+                 resizedScale(window: CGRect(x: 1590, y: 2062, width: 629, height: 177), video: driveway,
+                              scale: 0.1638, visible: builtinVisible, backing: 2))
 
         // --- track --------------------------------------------------------------
 
         let here = CGPoint(x: 1942, y: 0)
         let earlier = Placement(offset: CGPoint(x: 1542, y: 400), scale: 0.1638)
-        func look(_ events: [WindowEvent] = [], moved: Bool = false, resizedTo: Double? = nil,
+        func look(reset: Bool = false, moved: Bool = false, resizedTo: Double? = nil,
                   saved: Placement = earlier, sessionScale: Double? = 0.1638) -> TrackOutcome {
-            return track(saved: saved, events: events, moved: moved, resizedTo: resizedTo,
+            return track(saved: saved, reset: reset, moved: moved, resizedTo: resizedTo,
                          offset: here, sessionScale: sessionScale)
         }
 
@@ -376,10 +429,9 @@ enum MenuBarLogicTests {
         assertEq("resize: the session's scale follows", 0.3, look(resizedTo: 0.3).sessionScale)
         assertEq("resize and drag in one look: both kept",
                  Placement(offset: here, scale: 0.3), look(moved: true, resizedTo: 0.3).placement)
-        assertEq("reset: back to default", Placement(), look([.reset], moved: true, resizedTo: 0.3).placement)
-        assertEq("reset: reported", true, look([.reset]).wasReset)
-        assertEq("reset: session scale cleared", nil, look([.reset]).sessionScale)
-        assertEq("a feed switch changes nothing saved", false, look([.feed(2), .video(1920, 2560)]).changed)
+        assertEq("reset: back to default", Placement(), look(reset: true, moved: true, resizedTo: 0.3).placement)
+        assertEq("reset: session scale cleared", nil, look(reset: true).sessionScale)
+        assertEq("reset: changed", true, look(reset: true).changed)
 
         // --- trimmedLog -----------------------------------------------------------
 

@@ -264,7 +264,8 @@ assert_eq "reset of a missing file is harmless" "0" "$?"
 if command -v swiftc >/dev/null 2>&1; then
     swift_bin=$(mktemp)
     TMPFILES="$TMPFILES $swift_bin"
-    if swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/Placement.swift tools/MenuBarLogicTests.swift \
+    if swiftc -parse-as-library tools/MenuBarLogic.swift tools/Shortcut.swift tools/Placement.swift \
+            tools/MPV.swift tools/MenuBarLogicTests.swift \
             -o "$swift_bin" 2>&1; then
         swift_out=$("$swift_bin")
         printf '%s\n' "$swift_out" | grep -v ' passed, ' || true
