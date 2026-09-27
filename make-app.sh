@@ -3,6 +3,7 @@
 #
 #   ./make-app.sh              # build into this directory
 #   ./make-app.sh ~/Applications
+#   ./make-app.sh /Applications --standalone   # carry mpv's libraries too
 #
 # The bundle is generated, not committed, and self-contained: it carries the
 # viewer's scripts, so it keeps working if this checkout moves or goes away.
@@ -12,6 +13,13 @@ cd "$(dirname "$0")"
 REPO=$(pwd -P)
 APP_NAME="UniFi Viewer"
 DEST="${1:-$REPO}"
+# --standalone copies the libraries mpv needs into the bundle, for a copy that
+# runs on a Mac without Homebrew. Slower, and only needed for a release.
+STANDALONE=no
+for arg in "$@"; do
+    [ "$arg" = --standalone ] && STANDALONE=yes
+done
+case "$DEST" in --*) DEST="$REPO" ;; esac
 APP="$DEST/$APP_NAME.app"
 
 if [ ! -x "$REPO/view.sh" ]; then
@@ -179,6 +187,21 @@ if command -v python3 >/dev/null 2>&1; then
     python3 "$REPO/tools/make-icon.py" "$APP/Contents/Resources/AppIcon.icns"
 else
     echo "make-app.sh: python3 not found, building without an icon" >&2
+fi
+
+# --- libraries ------------------------------------------------------------
+if [ "$STANDALONE" = yes ]; then
+    "$REPO/tools/bundle-libs.sh" "$APP"
+    # The Vulkan loader needs telling where the bundled driver manifest is.
+    python3 - "$APP/Contents/MacOS/launch-viewer" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+line = 'export VK_ICD_FILENAMES="$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"\n'
+if line not in text:
+    text = text.replace('export MPV_BIN=', line + 'export MPV_BIN=')
+    open(path, "w").write(text)
+PY
 fi
 
 # --- sign -----------------------------------------------------------------
