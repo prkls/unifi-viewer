@@ -7,10 +7,14 @@
 # quit. Reconnects on its own if a stream drops.
 set -u
 
+# Run from the repo or from inside the app bundle; lib.sh sits beside this
+# file either way.
 cd "$(dirname "$0")" || exit 1
 # shellcheck source=lib.sh
 . ./lib.sh
 
+# The app sets STREAMS_CONF to ~/Library/Application Support/UniFi Viewer/.
+# Run from the repo, the feeds beside this script are used instead.
 CONF="${STREAMS_CONF:-./streams.conf}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/unifi-viewer"
 STATE="$CACHE/feed"

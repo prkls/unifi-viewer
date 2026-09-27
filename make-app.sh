@@ -4,8 +4,8 @@
 #   ./make-app.sh              # build into this directory
 #   ./make-app.sh ~/Applications
 #
-# The bundle is generated, not committed. Re-run it if you move the repo: the
-# launcher inside holds an absolute path to view.sh.
+# The bundle is generated, not committed, and self-contained: it carries the
+# viewer's scripts, so it keeps working if this checkout moves or goes away.
 set -eu
 
 cd "$(dirname "$0")"
@@ -65,6 +65,23 @@ else
     echo "             building without the settings window" >&2
 fi
 
+# --- the viewer's scripts -------------------------------------------------
+# Copied in, so the app does not depend on this checkout staying where it is.
+# Edit them here and rebuild, or run ./view.sh straight from the repo.
+cp "$REPO/view.sh" "$REPO/lib.sh" "$APP/Contents/Resources/"
+chmod +x "$APP/Contents/Resources/view.sh"
+
+# --- settings, where the app keeps them -----------------------------------
+# Not in the repo: a downloaded app has no repo, and settings should outlive
+# any one copy of it. An existing streams.conf here is copied over once, so
+# nothing is lost when upgrading from an older build.
+SETTINGS_DIR="$HOME/Library/Application Support/$APP_NAME"
+mkdir -p "$SETTINGS_DIR"
+if [ ! -f "$SETTINGS_DIR/streams.conf" ] && [ -f "$REPO/streams.conf" ]; then
+    cp "$REPO/streams.conf" "$SETTINGS_DIR/streams.conf"
+    echo "copied your feeds to $SETTINGS_DIR/streams.conf"
+fi
+
 # --- launcher -------------------------------------------------------------
 # launch-viewer starts one viewer session: view.sh with the bundle's mpv. The
 # menu bar button below runs it each time the viewer opens; without that
@@ -97,12 +114,15 @@ LOG="\${XDG_CACHE_HOME:-\$HOME/.cache}/unifi-viewer"
 mkdir -p "\$LOG"
 export MPVBUNDLE=true
 DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+RESOURCES="\$(cd "\$DIR/../Resources" && pwd)"
+export STREAMS_CONF="\${STREAMS_CONF:-\$HOME/Library/Application Support/$APP_NAME/streams.conf}"
+mkdir -p "\$(dirname "\$STREAMS_CONF")"
 if [ "\${1:-}" = --settings ]; then
-    exec "\$DIR/settings" "\${STREAMS_CONF:-$REPO/streams.conf}" >>"\$LOG/app.log" 2>&1
+    exec "\$DIR/settings" "\$STREAMS_CONF" >>"\$LOG/app.log" 2>&1
 fi
 export MPV_BIN="\$DIR/mpv"
 [ -x "\$DIR/settings" ] && export SETTINGS_BIN="\$DIR/settings"
-exec "$REPO/view.sh" >"\$LOG/app.log" 2>&1
+exec "\$RESOURCES/view.sh" >"\$LOG/app.log" 2>&1
 EOF
 chmod +x "$APP/Contents/MacOS/launch-viewer"
 
