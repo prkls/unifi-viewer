@@ -143,8 +143,8 @@ Run `./make-app.sh /Applications` again:
 - after moving the repo folder, since the app stores the path to it;
 - after `brew upgrade mpv`, since the app contains a copy of the mpv program.
 
-Changes to the scripts (`view.sh`, `lib.sh`, `tools/menu.lua`) take effect the next time
-the viewer opens, without a rebuild.
+Changes to the scripts (`view.sh`, `lib.sh`) take effect the next time the viewer opens,
+without a rebuild.
 
 Without the Xcode command line tools, `make-app.sh` still builds a working app, but with
 no settings window and no menu bar button. Feeds are then set in `streams.conf` by hand,
@@ -220,19 +220,40 @@ cameras.
 - **mpv's own key bindings are off** (`--input-builtin-bindings=no`,
   `--input-default-bindings=no`, `--input-media-keys=no`). Left on, a number key with no
   feed behind it changed picture settings (5/6 gamma, 7/8 saturation, 9/0 volume), which
-  persisted and quietly degraded the image. The right-click menu still works, because it
-  uses forced bindings, which these flags do not affect.
+  persisted and quietly degraded the image.
 - **mpv's macOS menu bar sends commands straight to mpv**, where no key binding can catch
-  them. `tools/menu.lua` holds three properties fixed instead: `pause` (a live camera has
-  nothing to resume to), `loop-file` (turning it off would make the app exit silently on
-  the next drop) and `speed`.
-- **The macOS menu bar is mpv's own** and cannot be changed; it is hardcoded in mpv's
-  `menu_bar.swift`. `--macos-menu-shortcuts=no` would remove its shortcuts, but also Cmd+Q.
+  them. The menu bar button watches three properties over the socket and puts them back
+  instead: `pause` (a live camera has nothing to resume to), `loop-file` (turning it off
+  would make the app exit silently on the next drop) and `speed`.
+- **The macOS menu bar is mpv's own**, built into it in `menu_bar.swift` and not changeable
+  at runtime: its items send commands straight to mpv, where no binding or script can reach
+  them. Since the app builds its own mpv, `tools/mpv-menus.py` rewrites them at the source
+  instead. Audio, Subtitle, Playback and Video go, none of them doing anything for a live
+  video-only feed. File keeps Close and Save Screenshot. The app menu becomes this app's:
+  its own About box, Camera Settings in place of mpv's config-file items, which offered to
+  create an `mpv.conf` this app never reads, and no "Quit and Remember Position". Help points
+  at this project, with a credit to mpv at the end. What is left is File, Edit, View, Window
+  and Help. The script checks each edit matches exactly once, so a future mpv that moves
+  those lines stops the build rather than quietly shipping the old menus, and it writes a
+  notice into each file it changes, which is what the GPL asks of a modified file.
+- **Screenshots go to the Desktop.** The app runs from inside its own bundle, which is not
+  writable, so `--screenshot-dir` points somewhere that is.
 - **Settings is `,`, not Cmd+`,`**, because mpv's menu bar already uses Cmd+`,` for its own
   Settings item, which opens `mpv.conf` and cannot be pointed elsewhere.
-- **The right-click menu is built by `tools/menu.lua`** through mpv's `menu-data` property.
-  mpv 0.41 has that property but not the `menu.conf` file support added later. Building
-  the menu in the script also lets its tick follow the feed that is playing.
+- **The viewer is driven over mpv's IPC socket**, by the menu bar button. The right-click
+  menu, the "Loading" panel, feed switches and the properties above all go through it, and
+  the viewer runs with `--load-scripts=no`. That is what lets the app ship an mpv built
+  without a scripting engine, which in turn keeps LuaJIT — and the just-in-time compilation
+  that Apple's hardened runtime blocks — out of the app.
+- **The right-click menu is a macOS menu**, shown by the menu bar button when it sees a
+  right-click over the viewer's window. mpv has a `context-menu` command and a `menu-data`
+  property, but on macOS that command does nothing: mpv's own menu is drawn inside the
+  video by a Lua script it ships, which is why it used to have font-size and scaling
+  settings.
+- **Keys go straight to mpv** where they can: each feed key runs `loadfile` on that feed's
+  URL, so switching works even with nothing connected to the socket. `r` and the reset
+  shortcut run `script-message`, which mpv broadcasts to everything connected, which is how
+  a key in the viewer reaches the menu bar button.
 
 ### Window placement
 
@@ -244,23 +265,42 @@ cameras.
 - **Feeds larger than the screen are shrunk to fit it**, with their shape kept
   (`--autofit-larger=100%x100%`). Plain `--autofit` would force every feed to one size.
 - **Nothing polls the window.** The menu bar button looks at it when the mouse button comes
-  up after a drag or resize, when the viewer reports a feed starting, and when it closes.
+  up after a drag or resize, when the viewer reports a feed's size over the socket, and
+  when it closes.
   Watching the mouse this way needs no Accessibility permission; Apple restricts only
   keyboard events. A move made with the keyboard alone, such as a macOS tiling shortcut, is
   saved at your next click anywhere, or when you close with the menu bar button or the
   shortcut.
+- **Only a window that has stopped changing is judged.** macOS animates a window in when it
+  opens, growing it from almost nothing, and a look during that saw a 43x44 window and
+  called it a resize to 1%, which the viewer then came back at. Two looks have to agree
+  before anything is read from the window.
 - **Moves and resizes are judged against what mpv would have done**, so it does not matter
   when the button looks. The window has moved if it is no longer at its saved corner, or
   no longer centred if it has none. It has been resized if its size is not the feed's size
-  at its scale, fitted to the screen. While a feed is connecting the window keeps the last
-  feed's size, so resizes are not judged until the new feed shows.
+  at its scale, fitted to the screen. A feed's size counts only once its first frame is
+  showing: mpv knows a feed's size before it has resized the window for it, and judging the
+  old window against the new size called that a resize by hand.
 - **mpv reapplies its start position on every feed switch**, which put a moved window back
-  where it opened. `tools/menu.lua` clears the start position once the window is up.
+  where it opened. The menu bar button clears the start position once the first frame is
+  up, after which a feed switch keeps the window centred where you put it.
 - **A saved position that no longer fits the screen**, after a resolution change for
   instance, is ignored and the window opens centred.
 - **Positions are measured from the screen's usable area as an app sees it.** On a MacBook
   display with a notch, apps get a menu bar 2 points taller than a command-line process
   does, and mpv places windows by the app's figure.
+
+### The parts
+
+- `view.sh` runs mpv and restarts it: on a dropped camera, for the settings window, and for
+  the reset shortcut. It writes the key bindings and the feed list mpv and the button read.
+- `lib.sh` holds the feed and URL rules, and is what `./test.sh` covers along with the
+  Swift logic in `tools/`.
+- `tools/MenuBar.swift` is the menu bar button: it starts and stops the viewer, keeps each
+  screen's placement, holds the keyboard shortcut, and drives mpv over the socket.
+- `tools/MPV.swift` and `tools/MPVClient.swift` are that socket: the message and command
+  formats, and the connection.
+- `tools/Settings.swift` is the settings window, `tools/make-icon.py` draws the app icon.
 
 ### The app bundle
 
@@ -275,6 +315,36 @@ cameras.
   rebuilt icon shows at once.
 - The settings window does not check URLs. `lib.sh` already does, and `view.sh` reopens the
   settings window when what was saved gives no usable feeds.
+
+## Releasing
+
+The download is built, signed and packaged by one script:
+
+```sh
+./tools/make-release.sh              # build, sign, notarize, package
+./tools/make-release.sh --no-sign    # just the packaging, for a dry run
+./tools/fetch-sources.sh             # the sources to publish beside it
+```
+
+It builds mpv (`tools/build-mpv.sh`), builds the app with its libraries inside
+(`make-app.sh --standalone`, which calls `tools/bundle-libs.sh`), signs everything with
+your Developer ID under the hardened runtime, notarizes it, and produces
+`build/release/UniFi Viewer.dmg` holding the app and a shortcut to Applications.
+
+It needs, once:
+
+- a **Developer ID Application** certificate in your keychain. An Apple Development
+  certificate is a different thing and macOS refuses it on a download. Xcode → Settings →
+  Accounts → Manage Certificates → + → Developer ID Application.
+- notarization credentials saved under a profile name:
+  `xcrun notarytool store-credentials unifi-viewer --apple-id <id> --team-id <team>
+  --password <app-specific password>`
+
+**Publish the DMG and the sources on the same GitHub release.** mpv is GPL-2.0-or-later
+and Homebrew's FFmpeg is built with GPL components, so shipping them means the matching
+source has to be available to whoever gets the app. `fetch-sources.sh` collects it from
+Homebrew's cache, for the exact versions in the build. The app itself carries the licence
+texts and a list of what is inside, in `Contents/Resources/Licenses`.
 
 ## Tests
 

@@ -160,50 +160,10 @@ func resizedScale(window: CGRect, video: CGSize, scale: Double?, visible: CGRect
     return Double(window.width * backing / video.width)
 }
 
-// What menu.lua reports, one line per event:
-//
-//   <seq> video <w> <h>   a feed of this size, in pixels, is now showing, and
-//                         mpv has sized the window for it
-//   <seq> reset           you pressed the reset shortcut
-//   <seq> feed <n>        feed n started opening; only logged, since size is
-//                         a scale and the same for every feed
-//
-// seq counts up from 1 each time the viewer opens, carrying on across the
-// restart a reset causes, so the menu bar button can tell which lines it has
-// already acted on.
-enum WindowEvent: Equatable {
-    case video(Int, Int)
-    case reset
-    case feed(Int)
-}
-
-func windowEvents(_ text: String, after seen: Int) -> (events: [WindowEvent], last: Int) {
-    var events: [WindowEvent] = []
-    var last = seen
-    for line in text.split(separator: "\n") {
-        let parts = line.split(separator: " ")
-        guard parts.count >= 2, let seq = Int(parts[0]), seq > last else { continue }
-        switch (parts[1], parts.count) {
-        case ("video", 4):
-            guard let width = Int(parts[2]), let height = Int(parts[3]), width > 0, height > 0 else { continue }
-            events.append(.video(width, height))
-        case ("reset", 2):
-            events.append(.reset)
-        case ("feed", 3):
-            guard let index = Int(parts[2]) else { continue }
-            events.append(.feed(index))
-        default:
-            continue
-        }
-        last = seq
-    }
-    return (events, last)
-}
-
 // What one look at the window changes about a screen's saved placement.
 //
 //   saved         what the screen had saved before this look
-//   events        menu.lua's reports not yet acted on, oldest first
+//   reset         you pressed the reset shortcut
 //   moved         whether the window is no longer where it was put (hasMoved)
 //   resizedTo     the scale you resized it to, if you did (resizedScale)
 //   offset        where its corner is now, as a --geometry offset
@@ -212,22 +172,20 @@ func windowEvents(_ text: String, after seen: Int) -> (events: [WindowEvent], la
 // A resize keeps the new scale and where the corner is. A move keeps the new
 // position with the scale the window is at, so a window dragged here from
 // another screen keeps its size. A reset clears the screen back to mpv's
-// default, and outranks anything else in the same look: the window then is
-// the old one on its way out, or the new one restarting.
+// default and outranks the rest: the window then is the old one on its way
+// out, or the new one restarting.
 struct TrackOutcome: Equatable {
     var placement: Placement
     var sessionScale: Double?
     var changed: Bool
-    var wasReset: Bool
 }
 
-func track(saved: Placement, events: [WindowEvent], moved: Bool, resizedTo: Double?,
+func track(saved: Placement, reset: Bool, moved: Bool, resizedTo: Double?,
            offset: CGPoint, sessionScale: Double?) -> TrackOutcome {
-    var outcome = TrackOutcome(placement: saved, sessionScale: sessionScale, changed: false, wasReset: false)
-    if events.contains(.reset) {
+    var outcome = TrackOutcome(placement: saved, sessionScale: sessionScale, changed: false)
+    if reset {
         outcome.placement = Placement()
         outcome.sessionScale = nil
-        outcome.wasReset = true
         outcome.changed = true
         return outcome
     }
@@ -243,25 +201,6 @@ func track(saved: Placement, events: [WindowEvent], moved: Bool, resizedTo: Doub
         outcome.changed = true
     }
     return outcome
-}
-
-// The size of the feed showing, from the latest of menu.lua's reports, or nil
-// while a feed is still opening. A feed can take many seconds to show its
-// first frame, and until then the window keeps the last feed's size: judging
-// it against the new feed's size then took the old size for a resize by hand
-// (seen in the log, with a feed that took 13 seconds to connect). So a feed
-// switch forgets the size until the new feed's own report, which comes once
-// its first frame is up and mpv has sized the window for it.
-func latestVideo(_ events: [WindowEvent], else current: CGSize?) -> CGSize? {
-    var video = current
-    for event in events {
-        switch event {
-        case .video(let width, let height): video = CGSize(width: width, height: height)
-        case .feed: video = nil
-        case .reset: video = nil
-        }
-    }
-    return video
 }
 
 // The last `keep` lines of a log, so it cannot grow without bound.

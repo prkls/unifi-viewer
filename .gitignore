@@ -3,6 +3,9 @@ streams.conf
 
 # Built by make-app.sh — generated, not source. Contains a copy of the mpv binary.
 UniFi Viewer.app/
+
+# mpv's source and build, from tools/build-mpv.sh
+build/
 *.iconset/
 *.icns
 

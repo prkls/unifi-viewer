@@ -3,15 +3,23 @@
 #
 #   ./make-app.sh              # build into this directory
 #   ./make-app.sh ~/Applications
+#   ./make-app.sh /Applications --standalone   # carry mpv's libraries too
 #
-# The bundle is generated, not committed. Re-run it if you move the repo: the
-# launcher inside holds an absolute path to view.sh.
+# The bundle is generated, not committed, and self-contained: it carries the
+# viewer's scripts, so it keeps working if this checkout moves or goes away.
 set -eu
 
 cd "$(dirname "$0")"
 REPO=$(pwd -P)
 APP_NAME="UniFi Viewer"
 DEST="${1:-$REPO}"
+# --standalone copies the libraries mpv needs into the bundle, for a copy that
+# runs on a Mac without Homebrew. Slower, and only needed for a release.
+STANDALONE=no
+for arg in "$@"; do
+    [ "$arg" = --standalone ] && STANDALONE=yes
+done
+case "$DEST" in --*) DEST="$REPO" ;; esac
 APP="$DEST/$APP_NAME.app"
 
 if [ ! -x "$REPO/view.sh" ]; then
@@ -29,13 +37,25 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # app, so the Dock tile carries this name and icon. Launched from the Homebrew
 # path instead, the tile is a bare "mpv" with a generic icon — verified.
 #
-# Only the executable is copied; it keeps linking against the Homebrew dylibs at
-# their absolute paths, so mpv must stay installed. Re-run this script after a
-# `brew upgrade mpv` to refresh the copy.
-MPV_SRC=$(command -v mpv || true)
-if [ -z "$MPV_SRC" ]; then
-    echo "make-app.sh: mpv not found — run: brew install mpv" >&2
-    exit 1
+# tools/build-mpv.sh builds the mpv this app is meant to ship: no scripting
+# engine, and only the libraries the viewer uses. Without it, the mpv Homebrew
+# installed is used instead, which works but carries LuaJIT and 70-odd other
+# packages.
+#
+# Either way only the executable is copied, and it keeps linking against the
+# Homebrew libraries at their absolute paths, so those must stay installed.
+# Re-run this script after a `brew upgrade` of them, or after build-mpv.sh.
+MPV_SRC=$(ls "$REPO"/build/mpv-*/build/mpv 2>/dev/null | tail -1 || true)
+if [ -n "$MPV_SRC" ]; then
+    echo "using the mpv built by tools/build-mpv.sh"
+else
+    MPV_SRC=$(command -v mpv || true)
+    if [ -z "$MPV_SRC" ]; then
+        echo "make-app.sh: mpv not found — run: brew install mpv" >&2
+        echo "             or build the trimmed one: ./tools/build-mpv.sh" >&2
+        exit 1
+    fi
+    echo "using Homebrew's mpv (./tools/build-mpv.sh builds a smaller one)"
 fi
 cp "$(readlink -f "$MPV_SRC" 2>/dev/null || echo "$MPV_SRC")" "$APP/Contents/MacOS/mpv"
 
@@ -51,6 +71,23 @@ if command -v swiftc >/dev/null 2>&1; then
 else
     echo "make-app.sh: swiftc not found (install Xcode command line tools)," >&2
     echo "             building without the settings window" >&2
+fi
+
+# --- the viewer's scripts -------------------------------------------------
+# Copied in, so the app does not depend on this checkout staying where it is.
+# Edit them here and rebuild, or run ./view.sh straight from the repo.
+cp "$REPO/view.sh" "$REPO/lib.sh" "$APP/Contents/Resources/"
+chmod +x "$APP/Contents/Resources/view.sh"
+
+# --- settings, where the app keeps them -----------------------------------
+# Not in the repo: a downloaded app has no repo, and settings should outlive
+# any one copy of it. An existing streams.conf here is copied over once, so
+# nothing is lost when upgrading from an older build.
+SETTINGS_DIR="$HOME/Library/Application Support/$APP_NAME"
+mkdir -p "$SETTINGS_DIR"
+if [ ! -f "$SETTINGS_DIR/streams.conf" ] && [ -f "$REPO/streams.conf" ]; then
+    cp "$REPO/streams.conf" "$SETTINGS_DIR/streams.conf"
+    echo "copied your feeds to $SETTINGS_DIR/streams.conf"
 fi
 
 # --- launcher -------------------------------------------------------------
@@ -85,12 +122,15 @@ LOG="\${XDG_CACHE_HOME:-\$HOME/.cache}/unifi-viewer"
 mkdir -p "\$LOG"
 export MPVBUNDLE=true
 DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+RESOURCES="\$(cd "\$DIR/../Resources" && pwd)"
+export STREAMS_CONF="\${STREAMS_CONF:-\$HOME/Library/Application Support/$APP_NAME/streams.conf}"
+mkdir -p "\$(dirname "\$STREAMS_CONF")"
 if [ "\${1:-}" = --settings ]; then
-    exec "\$DIR/settings" "\${STREAMS_CONF:-$REPO/streams.conf}" >>"\$LOG/app.log" 2>&1
+    exec "\$DIR/settings" "\$STREAMS_CONF" >>"\$LOG/app.log" 2>&1
 fi
 export MPV_BIN="\$DIR/mpv"
 [ -x "\$DIR/settings" ] && export SETTINGS_BIN="\$DIR/settings"
-exec "$REPO/view.sh" >"\$LOG/app.log" 2>&1
+exec "\$RESOURCES/view.sh" >"\$LOG/app.log" 2>&1
 EOF
 chmod +x "$APP/Contents/MacOS/launch-viewer"
 
@@ -102,7 +142,8 @@ chmod +x "$APP/Contents/MacOS/launch-viewer"
 if command -v swiftc >/dev/null 2>&1 \
     && echo "compiling menu bar button..." \
     && swiftc -O -parse-as-library "$REPO/tools/MenuBarLogic.swift" "$REPO/tools/Shortcut.swift" \
-        "$REPO/tools/Placement.swift" "$REPO/tools/MenuBar.swift" \
+        "$REPO/tools/Placement.swift" "$REPO/tools/MPV.swift" "$REPO/tools/MPVClient.swift" \
+        "$REPO/tools/MenuBar.swift" \
         -o "$APP/Contents/MacOS/unifi-viewer"; then
     :
 else
@@ -148,6 +189,21 @@ else
     echo "make-app.sh: python3 not found, building without an icon" >&2
 fi
 
+# --- libraries ------------------------------------------------------------
+if [ "$STANDALONE" = yes ]; then
+    "$REPO/tools/bundle-libs.sh" "$APP"
+    # The Vulkan loader needs telling where the bundled driver manifest is.
+    python3 - "$APP/Contents/MacOS/launch-viewer" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+line = 'export VK_ICD_FILENAMES="$RESOURCES/vulkan/icd.d/MoltenVK_icd.json"\n'
+if line not in text:
+    text = text.replace('export MPV_BIN=', line + 'export MPV_BIN=')
+    open(path, "w").write(text)
+PY
+fi
+
 # --- sign -----------------------------------------------------------------
 # Ad-hoc signature. Nothing here is downloaded so Gatekeeper will not quarantine
 # it, but an unsigned bundle still trips extra prompts on recent macOS.
@@ -159,6 +215,14 @@ codesign --force --deep --sign - "$APP" >/dev/null 2>&1 \
 touch "$APP"
 
 # --- register -------------------------------------------------------------
+# A build staged for a release is not an installed app: registering it would
+# leave two copies sharing a bundle id, which is what the warning below is
+# about, and macOS could then resolve either one.
+if [ "$STANDALONE" = yes ]; then
+    echo "staged build: not registering it with macOS"
+    exit 0
+fi
+
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 # Unregister before registering. Without the -u, Launch Services keeps the old

@@ -7,16 +7,19 @@
 # quit. Reconnects on its own if a stream drops.
 set -u
 
+# Run from the repo or from inside the app bundle; lib.sh sits beside this
+# file either way.
 cd "$(dirname "$0")" || exit 1
 # shellcheck source=lib.sh
 . ./lib.sh
 
+# The app sets STREAMS_CONF to ~/Library/Application Support/UniFi Viewer/.
+# Run from the repo, the feeds beside this script are used instead.
 CONF="${STREAMS_CONF:-./streams.conf}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/unifi-viewer"
 STATE="$CACHE/feed"
 GEN_CONF="$CACHE/input.conf"
 FEEDS="$CACHE/feeds"
-MENU_LUA="./tools/menu.lua"
 
 # make-app.sh points these at copies inside the app bundle. Running mpv from in
 # there makes macOS resolve the bundle's Info.plist, so the Dock tile gets this
@@ -32,21 +35,16 @@ SETTINGS_BIN="${SETTINGS_BIN:-}"
 # from a terminal, means mpv's defaults: the display the pointer is on, each
 # feed at its own size, centred.
 PLACEMENT="$CACHE/placement"
-# menu.lua reports each feed's size, feed switches and resets here, for the
-# menu bar button.
-WINDOW_EVENTS="$CACHE/window"
 
-# Right-click menu text size, in points. Override per-run if it does not suit
-# your display: MENU_FONT_SIZE=22 ./view.sh
-MENU_FONT_SIZE="${MENU_FONT_SIZE:-18}"
+# mpv listens on this socket. The menu bar button connects to it and drives
+# everything the viewer shows beyond the picture: the right-click menu, the
+# "Loading" panel, feed switches, and putting back the properties mpv's own
+# macOS menu bar would otherwise change. Run from a terminal with nothing
+# connected, the keys below still work; the menu and the panel do not appear.
+IPC_SOCKET="$CACHE/mpv.sock"
 
 if ! command -v "$MPV_BIN" >/dev/null 2>&1; then
     echo "view.sh: mpv not found — run: brew install mpv" >&2
-    exit 1
-fi
-
-if [ ! -f "$MENU_LUA" ]; then
-    echo "view.sh: $MENU_LUA is missing — the repo is incomplete" >&2
     exit 1
 fi
 
@@ -97,30 +95,33 @@ no_feeds_message() {
     echo "  enable Secure RTSPS Output, then copy the link under each resolution." >&2
 }
 
-# Write what mpv reads: keybindings, and the feed list for menu.lua. Both are
-# regenerated whenever the config changes, so the keys and the menu always agree
-# with what is configured.
+# Write what mpv reads: keybindings, and the feed list the menu bar button reads
+# to name them. Both are regenerated whenever the config changes, so the keys
+# and the menu always agree with what is configured.
 write_generated() {
     printf '%s\n' "$FEED_LINES" >"$FEEDS"
 
     : >"$GEN_CONF"
-    printf '%s\n' "$FEED_LINES" | while IFS="$(printf '\t')" read -r idx key _ _; do
-        [ -n "$idx" ] && printf '%s script-message unifi-select %s\n' "$key" "$idx" >>"$GEN_CONF"
+    # Each feed key opens its stream itself, so switching works with nothing
+    # connected to the socket. The menu bar button hears about it through the
+    # path property and takes care of the rest.
+    printf '%s\n' "$FEED_LINES" | while IFS="$(printf '\t')" read -r idx key _ url; do
+        [ -n "$idx" ] && printf '%s loadfile %s\n' "$key" "$url" >>"$GEN_CONF"
     done
-    # mpv 0.41 binds MBTN_RIGHT to `cycle pause` and has nothing bound to the
-    # context menu — right-click paused the video instead of opening anything.
-    # Binding it to the builtin context_menu script, whose `open` handler reads
-    # the menu-data property menu.lua fills in. Pausing a live camera is not
-    # useful, so taking the button over costs nothing.
-    echo 'MBTN_RIGHT script-message-to context_menu open' >>"$GEN_CONF"
+    # MBTN_RIGHT is deliberately left unbound. mpv's own context menu is drawn
+    # by a Lua script inside mpv, and this app ships an mpv with no scripting
+    # engine; the menu bar button shows a macOS menu instead, on seeing the
+    # right-click itself.
     # Plain comma, not Cmd+comma: the macOS menu bar is mpv's own and its
     # "Settings…" item already owns Cmd+, as a menu key equivalent, which AppKit
     # consumes before mpv's core ever sees it. That item opens mpv.conf and
     # cannot be repointed — it is hardcoded in the mpv binary.
     echo ', quit 20' >>"$GEN_CONF"
+    # script-message with no target is broadcast to everything connected to
+    # the socket, which is how a key in the viewer reaches the menu bar button.
     echo 'r script-message unifi-reload' >>"$GEN_CONF"
     # Control-Option-Command-R: mpv calls Command "Meta".
-    echo 'Ctrl+Alt+Meta+r script-message unifi-reset-window' >>"$GEN_CONF"
+    echo 'Ctrl+Alt+Meta+r script-message unifi-reset' >>"$GEN_CONF"
     echo 'q quit 5' >>"$GEN_CONF"
     # Nothing else is bound. mpv's builtin bindings are switched off entirely
     # (see --input-builtin-bindings below), so a key with no entry here does
@@ -191,10 +192,8 @@ while true; do
     # core. The context menu is unaffected: it uses forced bindings, which
     # override input.conf and are exempt from both.
     #
-    # context_menu scales with the window by default, so the menu would be a
-    # different size on a 7680px feed than on a 1280px one and would resize on
-    # every switch. scale_with_window=no scales by display DPI instead, so it
-    # stays one physical size whatever the stream resolution.
+    # --load-scripts=no keeps mpv's own scripts out: this app needs none of
+    # them, and the mpv it ships is built without a scripting engine at all.
     #
     # --screen-name only chooses where the window first opens. mpv accepts a
     # change to it at runtime but does not move the window (tested on 0.41), so
@@ -216,16 +215,16 @@ while true; do
         --input-builtin-bindings=no \
         --input-default-bindings=no \
         --input-media-keys=no \
-        --script="$MENU_LUA" \
-        --script-opts="unifi-feeds_file=$FEEDS,unifi-state_file=$STATE,unifi-window_file=$WINDOW_EVENTS,unifi-placement_file=$PLACEMENT,context_menu-scale_with_window=no,context_menu-font_size=$MENU_FONT_SIZE" \
+        --input-ipc-server="$IPC_SOCKET" \
+        --load-scripts=no \
         --no-audio \
+        --screenshot-dir="$HOME/Desktop" \
         --profile=low-latency \
         --rtsp-transport=tcp \
         --hwdec=videotoolbox,auto \
         --msg-level=ffmpeg=fatal \
         --loop-file=inf \
         --no-border \
-        --osc=no \
         --window-scale="${scale:-1}" \
         --autofit-larger=100%x100% \
         --screen-name="$screen" \
@@ -238,15 +237,15 @@ while true; do
     rc=$?
 
     # 21 is the reset shortcut: back to mpv's own size and position, on the
-    # same screen. menu.lua has told the menu bar button, which forgets what
-    # it saved for this screen; the file just has to agree before mpv restarts.
+    # same screen. The menu bar button has already forgotten what it saved for
+    # this screen; the file just has to agree before mpv restarts.
     if [ "$rc" -eq 21 ]; then
         placement_reset "$PLACEMENT"
         backoff=2
         continue
     fi
 
-    # 20 is the menu's "Camera Settings..." item.
+    # 20 is the viewer menu's "Camera Settings..." item, and the , key.
     if [ "$rc" -eq 20 ]; then
         if run_settings; then
             load_feeds || { no_feeds_message; exit 1; }
@@ -259,7 +258,7 @@ while true; do
     fi
 
     # Every deliberate quit ends the loop:
-    #   5  our `q` binding and the menu's Quit item
+    #   5  our `q` binding and the viewer menu's Quit item
     #   4  Ctrl+C, or a signal
     #   0  Cmd+Q, the Quit menu item, or Dock -> Quit. mpv's macOS menu sends a
     #      bare `quit` command straight to the core (menu_bar.swift), so no
