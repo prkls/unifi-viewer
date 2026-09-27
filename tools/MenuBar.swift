@@ -337,6 +337,10 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         trimLog()
         record("open on \(screen?.name ?? "the pointer's screen"): \(placement.encoded), feed \(currentFeed())")
 
+        // The viewer that just closed leaves its socket behind, and a new
+        // client connects to it before the new mpv has made its own: the
+        // button then talks to an mpv on its way out. Clear it first.
+        try? FileManager.default.removeItem(atPath: mpvSocket)
         writePlacementFile(screen?.name, placement)
         sessionScale = placement.scale
         feedSize = FeedSize()
@@ -387,6 +391,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             record("closed")
             // Nothing left to place; a later run from a terminal gets defaults.
             try? FileManager.default.removeItem(atPath: placementFile)
+            try? FileManager.default.removeItem(atPath: mpvSocket)
             let next = self.afterViewerExit
             self.afterViewerExit = nil
             next?()

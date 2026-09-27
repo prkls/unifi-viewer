@@ -79,6 +79,14 @@ final class MPVClient {
             return false
         }
 
+        // Writing to a socket whose other end has gone raises SIGPIPE, which
+        // ends the process by default — the menu bar button vanished from
+        // every screen when the viewer was moved to another one, because it
+        // was still writing as that mpv exited. With this, such a write fails
+        // and is handled instead.
+        var on: Int32 = 1
+        setsockopt(socketFD, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+
         fd = socketFD
         buffer.removeAll()
         let source = DispatchSource.makeReadSource(fileDescriptor: socketFD, queue: .main)
