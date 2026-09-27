@@ -225,8 +225,13 @@ cameras.
   them. The menu bar button watches three properties over the socket and puts them back
   instead: `pause` (a live camera has nothing to resume to), `loop-file` (turning it off
   would make the app exit silently on the next drop) and `speed`.
-- **The macOS menu bar is mpv's own** and cannot be changed; it is hardcoded in mpv's
-  `menu_bar.swift`. `--macos-menu-shortcuts=no` would remove its shortcuts, but also Cmd+Q.
+- **The macOS menu bar is mpv's own**, built into it in `menu_bar.swift` and not changeable
+  at runtime: its items send commands straight to mpv, where no binding or script can reach
+  them. Since the app builds its own mpv, `tools/trim-mpv-menu.py` cuts the menus down at
+  the source instead: out go Audio, Subtitle and Playback, which do nothing for a live
+  video-only feed, and the Video menu's zoom items. What is left is File, Edit, View, Video,
+  Window and Help. The script checks each edit matches exactly once, so a future mpv that
+  moves those lines stops the build rather than quietly shipping the old menus.
 - **Settings is `,`, not Cmd+`,`**, because mpv's menu bar already uses Cmd+`,` for its own
   Settings item, which opens `mpv.conf` and cannot be pointed elsewhere.
 - **The viewer is driven over mpv's IPC socket**, by the menu bar button. The right-click

@@ -29,13 +29,17 @@ if [ ! -f "$OUT/mpv-$MPV_VERSION.tar.gz" ]; then
 fi
 
 # Every library in the app, traced back to the formula that built it.
-MANIFEST=$(dirname "$APP_FRAMEWORKS")/Resources/bundled-libraries.txt
+# make-release.sh leaves this beside the disk image, since the app it came from
+# is deleted once packaged. Without it this fetched mpv's whole dependency
+# tree: 74 packages and 400 MB, most of which the app does not ship.
+MANIFEST="$REPO/build/release/bundled-libraries.txt"
+[ -f "$MANIFEST" ] || MANIFEST=$(dirname "$APP_FRAMEWORKS")/Resources/bundled-libraries.txt
 formulas=""
 if [ -f "$MANIFEST" ]; then
     formulas=$(sed -n 's|.*/Cellar/\([^/]*\)/.*|\1|p' "$MANIFEST" | sort -u | tr '\n' ' ')
 else
-    echo "fetch-sources.sh: no bundled app found, falling back to mpv's dependencies" >&2
-    formulas=$(brew deps mpv 2>/dev/null | tr '\n' ' ')
+    echo "fetch-sources.sh: no list of what was bundled; run tools/make-release.sh first" >&2
+    exit 1
 fi
 formulas=$(printf '%s\n' $formulas | sort -u | tr '\n' ' ')
 

@@ -94,7 +94,10 @@ if [ "$SIGN" = yes ]; then
     sign() {
         codesign --force --timestamp --options runtime --sign "$IDENTITY" "$@"
     }
-    find "$APP/Contents/Frameworks" -name '*.dylib' -print0 | xargs -0 -n1 sign
+    # A plain loop, not xargs: sign is a shell function and xargs runs programs.
+    for lib in "$APP/Contents/Frameworks"/*.dylib; do
+        sign "$lib"
+    done
     for binary in mpv settings unifi-viewer launch-viewer; do
         [ -e "$APP/Contents/MacOS/$binary" ] && sign "$APP/Contents/MacOS/$binary"
     done
@@ -132,6 +135,10 @@ if [ "$NOTARIZE" = yes ]; then
     xcrun stapler staple "$DMG"
     xcrun stapler validate "$DMG"
 fi
+
+# Keep the list of what was bundled: fetch-sources.sh needs it, and the app it
+# came from is about to go.
+cp "$APP/Contents/Resources/bundled-libraries.txt" "$STAGE/bundled-libraries.txt"
 
 # The app now lives in the disk image. Leaving the staged copy on disk would
 # mean two apps with one bundle id, which is how macOS ends up showing the
