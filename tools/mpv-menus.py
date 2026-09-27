@@ -39,25 +39,30 @@ NOTICE_MARK = "Modified for UniFi Viewer"
 NOTICE = """\
 // {mark} on {when} by tools/mpv-menus.py.
 // Changed: removed the Audio, Subtitle, Playback and Video menus, cut the File
-// menu down to Close and Save Screenshot, dropped the log file item, made the
-// app menu UniFi Viewer's
-// rather than mpv's, and pointed Help at this project. The unmodified source of
-// this file is published with every UniFi Viewer release.
+// menu down to Save Screenshot (now on Cmd+S) and Close, dropped the log file
+// item, made the app menu UniFi Viewer's rather than mpv's, and pointed Help at
+// this project. The unmodified source of this file is published with every
+// UniFi Viewer release.
 
 """
 
 # mpv's File menu offers to open files, URLs and playlists. This app plays the
-# cameras you configured and nothing else.
+# cameras you configured and nothing else. What is left is the screenshot,
+# first and on Cmd+S because it is the item anyone comes to this menu for, and
+# Close under it. Screenshots land on the Desktop, named after the camera and
+# the time (see --screenshot-template in view.sh).
 FILE_OLD = """\
             Config(name: "Open File…", key: "o", action: #selector(openFiles), target: self),
             Config(name: "Open URL…", key: "O", action: #selector(openUrl), target: self),
             Config(name: "Open Playlist…", action: #selector(openPlaylist), target: self),
             Config(type: .separator),
             Config(name: "Close", key: "w", action: #selector(NSWindow.performClose(_:))),
+            Config(name: "Save Screenshot", action: #selector(command(_:)), target: self, command: "async screenshot")
 """
 
 FILE_NEW = """\
-            Config(name: "Close", key: "w", action: #selector(NSWindow.performClose(_:))),
+            Config(name: "Save Screenshot", key: "s", action: #selector(command(_:)), target: self, command: "async screenshot"),
+            Config(name: "Close", key: "w", action: #selector(NSWindow.performClose(_:)))
 """
 
 # mpv's app menu is about mpv: its About box, and two items that open mpv

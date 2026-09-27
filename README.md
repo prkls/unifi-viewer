@@ -229,15 +229,19 @@ cameras.
   at runtime: its items send commands straight to mpv, where no binding or script can reach
   them. Since the app builds its own mpv, `tools/mpv-menus.py` rewrites them at the source
   instead. Audio, Subtitle, Playback and Video go, none of them doing anything for a live
-  video-only feed. File keeps Close and Save Screenshot. The app menu becomes this app's:
+  video-only feed. File keeps Save Screenshot, on Cmd+S, and Close. The app menu becomes this app's:
   its own About box, Camera Settings in place of mpv's config-file items, which offered to
   create an `mpv.conf` this app never reads, and no "Quit and Remember Position". Help points
   at this project, with a credit to mpv at the end. What is left is File, Edit, View, Window
   and Help. The script checks each edit matches exactly once, so a future mpv that moves
   those lines stops the build rather than quietly shipping the old menus, and it writes a
   notice into each file it changes, which is what the GPL asks of a modified file.
-- **Screenshots go to the Desktop.** The app runs from inside its own bundle, which is not
-  writable, so `--screenshot-dir` points somewhere that is.
+- **Screenshots go to the Desktop**, named after the camera and the moment — `Driveway
+  2026-09-27 15.13.36.jpg`. The app runs from inside its own bundle, which is not writable, so
+  `--screenshot-dir` points somewhere that is. The camera's name reaches mpv as
+  `force-media-title`, set per feed in the generated `input.conf`, and
+  `--screenshot-template` reads it back. The time uses dots because Finder shows a colon in a
+  filename as a slash.
 - **Settings is `,`, not Cmd+`,`**, because mpv's menu bar already uses Cmd+`,` for its own
   Settings item, which opens `mpv.conf` and cannot be pointed elsewhere.
 - **The viewer is driven over mpv's IPC socket**, by the menu bar button. The right-click

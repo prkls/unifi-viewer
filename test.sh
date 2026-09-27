@@ -257,6 +257,26 @@ assert_eq "reset with no screen empties the file" "" "$(cat "$noscreen")"
 placement_reset /nonexistent/placement
 assert_eq "reset of a missing file is harmless" "0" "$?"
 
+# --- media_title_option ----------------------------------------------------
+# The feed name mpv puts in screenshot filenames, escaped for input.conf. The
+# byte count is what mpv reads the value's length from, so it has to match the
+# text as mpv sees it — after the quotes and backslashes are undone.
+
+assert_eq "plain name" \
+    '"force-media-title=%8%Driveway"' "$(media_title_option Driveway)"
+assert_eq "a space does not end the name" \
+    '"force-media-title=%9%Side Yard"' "$(media_title_option 'Side Yard')"
+assert_eq "a comma does not end the name" \
+    '"force-media-title=%15%Drive, out back"' "$(media_title_option 'Drive, out back')"
+assert_eq "a colon does not end the name" \
+    '"force-media-title=%10%Gate: side"' "$(media_title_option 'Gate: side')"
+assert_eq "a quote is escaped and not counted twice" \
+    '"force-media-title=%5%Sam\"s"' "$(media_title_option 'Sam"s')"
+assert_eq "a backslash is escaped and not counted twice" \
+    '"force-media-title=%5%Sam\\s"' "$(media_title_option 'Sam\s')"
+assert_eq "accented letters count as their bytes" \
+    '"force-media-title=%7%Gärage"' "$(media_title_option 'Gärage')"
+
 # --- menu bar logic (Swift) ------------------------------------------------
 # Compiled and run here so one command covers everything. Skipped, and said
 # so, without swiftc: the app then builds without the menu bar button anyway.

@@ -253,3 +253,24 @@ feeds_load() {
         return 1
     fi
 }
+
+# media_title_option <name>
+#
+# The mpv per-file option that tells mpv a feed's name, escaped for input.conf:
+#
+#   media_title_option "Side Yard"  ->  "force-media-title=%9%Side Yard"
+#
+# mpv puts this name in screenshot filenames (see --screenshot-template in
+# view.sh), so it has to survive two parsers. The command tokenizer splits
+# arguments on whitespace unless they are double-quoted, where it reads JSON
+# escapes; the per-file option list then ends a value at a comma or a colon
+# unless it is length-prefixed as %<bytes>%<text>. Feed names are whatever
+# someone typed in streams.conf, commas and quotes included, so the value is
+# length-prefixed first and the whole argument quoted after.
+media_title_option() {
+    _name="$1"
+    # Bytes, not characters: mpv counts the prefix in bytes.
+    _len=$(printf '%s' "$_name" | wc -c | tr -d ' ')
+    _escaped=$(printf '%s' "$_name" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    printf '"force-media-title=%%%s%%%s"' "$_len" "$_escaped"
+}

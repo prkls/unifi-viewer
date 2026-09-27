@@ -105,8 +105,13 @@ write_generated() {
     # Each feed key opens its stream itself, so switching works with nothing
     # connected to the socket. The menu bar button hears about it through the
     # path property and takes care of the rest.
-    printf '%s\n' "$FEED_LINES" | while IFS="$(printf '\t')" read -r idx key _ url; do
-        [ -n "$idx" ] && printf '%s loadfile %s\n' "$key" "$url" >>"$GEN_CONF"
+    #
+    # Each feed carries its own name into mpv as force-media-title, which is
+    # what --screenshot-template below puts in the filename. replace and -1 are
+    # loadfile's own defaults, spelled out because the options come after them.
+    printf '%s\n' "$FEED_LINES" | while IFS="$(printf '\t')" read -r idx key name url; do
+        [ -n "$idx" ] && printf '%s loadfile %s replace -1 %s\n' \
+            "$key" "$url" "$(media_title_option "$name")" >>"$GEN_CONF"
     done
     # MBTN_RIGHT is deliberately left unbound. mpv's own context menu is drawn
     # by a Lua script inside mpv, and this app ships an mpv with no scripting
@@ -167,6 +172,7 @@ backoff=2
 while true; do
     index=$(cat "$STATE" 2>/dev/null) || index="$start_index"
     has_feed "$index" || index="$start_index"
+    name=$(feed_field "$index" 3)
     url=$(feed_field "$index" 4)
 
     screen=$(placement_field "$PLACEMENT" screen)
@@ -210,6 +216,14 @@ while true; do
     # find ref with POC n" until the next keyframe — up to ~5s on these cameras.
     # Those frames are skipped, not rendered, so the picture is unaffected.
     # mpv's own connection errors come from other prefixes and still show.
+    #
+    # --screenshot-template names each screenshot after the camera and the
+    # moment it was taken: "Driveway 2026-09-27 15.03.12.jpg" on the Desktop.
+    # %{media-title} is the feed name, given per feed in input.conf above and
+    # here for whichever feed opens first; %t is strftime. The time uses dots
+    # because Finder shows a colon in a filename as a slash. Two screenshots
+    # within one second is the case this cannot name: mpv says the file exists
+    # rather than overwriting it.
     "$MPV_BIN" \
         --input-conf="$GEN_CONF" \
         --input-builtin-bindings=no \
@@ -219,6 +233,8 @@ while true; do
         --load-scripts=no \
         --no-audio \
         --screenshot-dir="$HOME/Desktop" \
+        --screenshot-template="%{media-title} %tF %tH.%tM.%tS" \
+        --force-media-title="$name" \
         --profile=low-latency \
         --rtsp-transport=tcp \
         --hwdec=videotoolbox,auto \
