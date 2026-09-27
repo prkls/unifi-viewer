@@ -39,7 +39,8 @@ NOTICE_MARK = "Modified for UniFi Viewer"
 NOTICE = """\
 // {mark} on {when} by tools/mpv-menus.py.
 // Changed: removed the Audio, Subtitle, Playback and Video menus, cut the File
-// menu down to Close and Save Screenshot, made the app menu UniFi Viewer's
+// menu down to Close and Save Screenshot, dropped the log file item, made the
+// app menu UniFi Viewer's
 // rather than mpv's, and pointed Help at this project. The unmodified source of
 // this file is published with every UniFi Viewer release.
 
@@ -134,6 +135,25 @@ under the GPL. The source of everything inside is published with each release.
         }
 """
 
+# mpv adds this to Help in a bundle. It opens a log this app does not write,
+# so choosing it only ever put up a dialog saying there was none. With it gone
+# the list is never added to, so it becomes a constant.
+LOG_OLD = """\
+        var helpMenuConfigs = [
+"""
+
+LOG_NEW = """\
+        let helpMenuConfigs = [
+"""
+
+LOG_BLOCK = """\
+        if AppHub.shared.isBundle {
+            helpMenuConfigs += [
+                Config(name: "Show log File…", action: #selector(showFile(_:)), target: self, url: NSHomeDirectory() + "/Library/Logs/mpv.log")
+            ]
+        }
+"""
+
 # mpv's Help menu sends people to mpv for help with an app that is not mpv.
 HELP_OLD = """\
             Config(name: "mpv Website…", action: #selector(url(_:)), target: self, url: "https://mpv.io"),
@@ -211,7 +231,9 @@ def main():
         if gone:
             changed.append(name.capitalize())
 
-    for old, new, what in [(FILE_OLD, FILE_NEW, "File menu"),
+    for old, new, what in [(LOG_BLOCK, "", "log file item"),
+                           (LOG_OLD, LOG_NEW, "help menu constant"),
+                           (FILE_OLD, FILE_NEW, "File menu"),
                            (APP_OLD, APP_NEW, "app menu"),
                            (QUIT_OLD, QUIT_NEW, "Quit item"),
                            (ABOUT_OLD, ABOUT_NEW, "About box")]:
