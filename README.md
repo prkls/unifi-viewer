@@ -301,6 +301,36 @@ cameras.
 - The settings window does not check URLs. `lib.sh` already does, and `view.sh` reopens the
   settings window when what was saved gives no usable feeds.
 
+## Releasing
+
+The download is built, signed and packaged by one script:
+
+```sh
+./tools/make-release.sh              # build, sign, notarize, package
+./tools/make-release.sh --no-sign    # just the packaging, for a dry run
+./tools/fetch-sources.sh             # the sources to publish beside it
+```
+
+It builds mpv (`tools/build-mpv.sh`), builds the app with its libraries inside
+(`make-app.sh --standalone`, which calls `tools/bundle-libs.sh`), signs everything with
+your Developer ID under the hardened runtime, notarizes it, and produces
+`build/release/UniFi Viewer.dmg` holding the app and a shortcut to Applications.
+
+It needs, once:
+
+- a **Developer ID Application** certificate in your keychain. An Apple Development
+  certificate is a different thing and macOS refuses it on a download. Xcode → Settings →
+  Accounts → Manage Certificates → + → Developer ID Application.
+- notarization credentials saved under a profile name:
+  `xcrun notarytool store-credentials unifi-viewer --apple-id <id> --team-id <team>
+  --password <app-specific password>`
+
+**Publish the DMG and the sources on the same GitHub release.** mpv is GPL-2.0-or-later
+and Homebrew's FFmpeg is built with GPL components, so shipping them means the matching
+source has to be available to whoever gets the app. `fetch-sources.sh` collects it from
+Homebrew's cache, for the exact versions in the build. The app itself carries the licence
+texts and a list of what is inside, in `Contents/Resources/Licenses`.
+
 ## Tests
 
 ```sh

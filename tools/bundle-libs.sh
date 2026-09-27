@@ -80,12 +80,24 @@ PY
 LIBS=$(collect "$MPV")
 [ -n "$LIBS" ] || { echo "bundle-libs.sh: mpv needs no libraries, nothing to do"; exit 0; }
 
+# Where each library came from is written down as they are copied: the path
+# carries the package and version, which the release needs for its notice and
+# for fetching matching source.
+MANIFEST="$APP/Contents/Resources/bundled-libraries.txt"
+mkdir -p "$(dirname "$MANIFEST")"
+: > "$MANIFEST"
 count=0
 for lib in $LIBS; do
     name=$(basename "$lib")
-    [ -f "$FRAMEWORKS/$name" ] || cp "$(readlink -f "$lib" 2>/dev/null || echo "$lib")" "$FRAMEWORKS/$name"
+    real=$(readlink -f "$lib" 2>/dev/null || echo "$lib")
+    # The same library turns up under more than one path (Homebrew keeps opt/
+    # symlinks beside the Cellar); record and count it once.
+    if [ ! -f "$FRAMEWORKS/$name" ]; then
+        cp "$real" "$FRAMEWORKS/$name"
+        printf '%s\t%s\n' "$name" "$real" >> "$MANIFEST"
+        count=$((count + 1))
+    fi
     chmod u+w "$FRAMEWORKS/$name"
-    count=$((count + 1))
 done
 echo "bundled $count libraries"
 
@@ -108,7 +120,10 @@ done
 for target in "$MPV" "$FRAMEWORKS"/*.dylib; do
     for path in $(otool -l "$target" | awk '/LC_RPATH/ {found=1} found && /path /{print $2; found=0}'); do
         case "$path" in
-            /opt/*|/usr/local/*) install_name_tool -delete_rpath "$path" "$target" 2>/dev/null || true ;;
+            # Homebrew's, and Xcode's Swift path: neither exists on the Mac
+            # this app is going to. The Swift runtime it needs ships in macOS.
+            /opt/*|/usr/local/*|/Applications/Xcode*) \
+                install_name_tool -delete_rpath "$path" "$target" 2>/dev/null || true ;;
         esac
     done
 done

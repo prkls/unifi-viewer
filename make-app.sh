@@ -215,6 +215,14 @@ codesign --force --deep --sign - "$APP" >/dev/null 2>&1 \
 touch "$APP"
 
 # --- register -------------------------------------------------------------
+# A build staged for a release is not an installed app: registering it would
+# leave two copies sharing a bundle id, which is what the warning below is
+# about, and macOS could then resolve either one.
+if [ "$STANDALONE" = yes ]; then
+    echo "staged build: not registering it with macOS"
+    exit 0
+fi
+
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 # Unregister before registering. Without the -u, Launch Services keeps the old
