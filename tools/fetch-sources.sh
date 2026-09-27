@@ -50,7 +50,9 @@ for formula in $formulas; do
         continue
     }
     for file in $(brew --cache --build-from-source "$formula" 2>/dev/null); do
-        [ -f "$file" ] && cp "$file" "$OUT/" 2>/dev/null || true
+        # Homebrew's cache names carry a checksum prefix; drop it so the files
+        # read as what they are.
+        [ -f "$file" ] && cp "$file" "$OUT/$(basename "$file" | sed 's/^[0-9a-f]*--//')" 2>/dev/null || true
     done
 done
 
