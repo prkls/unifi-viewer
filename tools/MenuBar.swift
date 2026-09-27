@@ -185,6 +185,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     var sessionScale: Double?         // the scale the window is at, nil for mpv's own
     var feedSize = FeedSize()         // the size to judge a resize against
     var lastSeen: (frame: CGRect, screen: Screen)?  // for the final save, once it has gone
+    var previousLook: CGRect?         // to tell a window that has settled from one still moving
     var mouseUpMonitor: Any?          // a look at the end of every drag or resize
     var rightClickMonitor: Any?       // the viewer's own menu
     var loadingShown = false
@@ -345,6 +346,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         sessionScale = placement.scale
         feedSize = FeedSize()
         lastSeen = nil
+        previousLook = nil
         feeds = loadFeeds()
         playing = nil
         loadingShown = false
@@ -773,13 +775,23 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         guard let i = screenIndex(forWindow: frame, in: screens.map { $0.bounds }) else { return }
         let screen = screens[i]
         remember(screen.name)
+
+        // macOS animates a window in when it opens, growing it from almost
+        // nothing: a look during that saw 43x44 and called it a resize to 1%,
+        // which is the size the viewer then came back at. Only a window that
+        // has stopped changing says anything about what you did to it, and two
+        // looks that agree are what that means.
+        let settled = previousLook == frame
+        previousLook = frame
         lastSeen = (frame, screen)
-        apply(frame: frame, on: screen, judge: judge, why: trigger)
+        apply(frame: frame, on: screen, judge: judge && settled, why: trigger,
+              settling: judge && !settled)
     }
 
     // Act on menu.lua's new reports, and when judging, on a move or resize,
     // for a window at `frame`.
-    func apply(frame: CGRect, on screen: Screen, judge: Bool, why: String, reset: Bool = false) {
+    func apply(frame: CGRect, on screen: Screen, judge: Bool, why: String, reset: Bool = false,
+               settling: Bool = false) {
         var moved = false
         var resizedTo: Double? = nil
         if judge && !reset {
@@ -793,6 +805,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             }
         }
         var seen = "look (\(why)): \(describe(frame)) on \(screen.name)"
+        if settling { seen += ", still settling" }
         if moved { seen += ", position changed" }
         if let scale = resizedTo { seen += ", resized to \(String(format: "%.6f", scale))" }
         record(seen)

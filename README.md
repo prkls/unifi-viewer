@@ -267,6 +267,10 @@ cameras.
   keyboard events. A move made with the keyboard alone, such as a macOS tiling shortcut, is
   saved at your next click anywhere, or when you close with the menu bar button or the
   shortcut.
+- **Only a window that has stopped changing is judged.** macOS animates a window in when it
+  opens, growing it from almost nothing, and a look during that saw a 43x44 window and
+  called it a resize to 1%, which the viewer then came back at. Two looks have to agree
+  before anything is read from the window.
 - **Moves and resizes are judged against what mpv would have done**, so it does not matter
   when the button looks. The window has moved if it is no longer at its saved corner, or
   no longer centred if it has none. It has been resized if its size is not the feed's size
