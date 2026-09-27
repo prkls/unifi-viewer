@@ -67,8 +67,8 @@ fi
 
 # --- trim the menus -------------------------------------------------------
 # mpv's macOS menu bar is built into it and cannot be changed at runtime, so it
-# is changed here, in the copy this app ships. See tools/trim-mpv-menu.py.
-python3 "$REPO/tools/trim-mpv-menu.py" "$SOURCE"
+# is changed here, in the copy this app ships. See tools/mpv-menus.py.
+python3 "$REPO/tools/mpv-menus.py" "$SOURCE"
 
 # --- configure ------------------------------------------------------------
 # Everything this app does not use is off. mpv's own hard dependencies are

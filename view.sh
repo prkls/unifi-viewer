@@ -218,6 +218,7 @@ while true; do
         --input-ipc-server="$IPC_SOCKET" \
         --load-scripts=no \
         --no-audio \
+        --screenshot-dir="$HOME/Desktop" \
         --profile=low-latency \
         --rtsp-transport=tcp \
         --hwdec=videotoolbox,auto \
