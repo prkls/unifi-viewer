@@ -220,7 +220,6 @@ while true; do
         --msg-level=ffmpeg=fatal \
         --loop-file=inf \
         --no-border \
-        --osc=no \
         --window-scale="${scale:-1}" \
         --autofit-larger=100%x100% \
         --screen-name="$screen" \

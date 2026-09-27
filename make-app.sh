@@ -29,13 +29,25 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # app, so the Dock tile carries this name and icon. Launched from the Homebrew
 # path instead, the tile is a bare "mpv" with a generic icon — verified.
 #
-# Only the executable is copied; it keeps linking against the Homebrew dylibs at
-# their absolute paths, so mpv must stay installed. Re-run this script after a
-# `brew upgrade mpv` to refresh the copy.
-MPV_SRC=$(command -v mpv || true)
-if [ -z "$MPV_SRC" ]; then
-    echo "make-app.sh: mpv not found — run: brew install mpv" >&2
-    exit 1
+# tools/build-mpv.sh builds the mpv this app is meant to ship: no scripting
+# engine, and only the libraries the viewer uses. Without it, the mpv Homebrew
+# installed is used instead, which works but carries LuaJIT and 70-odd other
+# packages.
+#
+# Either way only the executable is copied, and it keeps linking against the
+# Homebrew libraries at their absolute paths, so those must stay installed.
+# Re-run this script after a `brew upgrade` of them, or after build-mpv.sh.
+MPV_SRC=$(ls "$REPO"/build/mpv-*/build/mpv 2>/dev/null | tail -1 || true)
+if [ -n "$MPV_SRC" ]; then
+    echo "using the mpv built by tools/build-mpv.sh"
+else
+    MPV_SRC=$(command -v mpv || true)
+    if [ -z "$MPV_SRC" ]; then
+        echo "make-app.sh: mpv not found — run: brew install mpv" >&2
+        echo "             or build the trimmed one: ./tools/build-mpv.sh" >&2
+        exit 1
+    fi
+    echo "using Homebrew's mpv (./tools/build-mpv.sh builds a smaller one)"
 fi
 cp "$(readlink -f "$MPV_SRC" 2>/dev/null || echo "$MPV_SRC")" "$APP/Contents/MacOS/mpv"
 
