@@ -61,6 +61,9 @@ done
     echo "Source for the programs UniFi Viewer ships, as of $(date +%Y-%m-%d)."
     echo
     echo "mpv $MPV_VERSION, built with the options in tools/build-mpv.sh."
+    echo "One mpv file is modified: osdep/mac/menu_bar.swift, by the script"
+    echo "tools/mpv-menus.py in https://github.com/prkls/unifi-viewer. Running"
+    echo "it on the mpv source here reproduces the copy this app ships."
     echo "The libraries were built by Homebrew from the source here; their"
     echo "formulas, with the patches and flags used, are in Homebrew's"
     echo "homebrew-core repository at the versions named below."
