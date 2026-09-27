@@ -160,3 +160,39 @@ func loadingOverlay(feed name: String, width: Int, height: Int) -> String {
         + "\\1c&HFFFFFF&\\fs\(size)}Loading \(name)"
     return dim + "\n" + label
 }
+
+// --- the size to judge a resize against -------------------------------------
+
+// mpv tells us a feed's size, but when it does matters. Watching the property
+// makes mpv send its current value at once, which is empty before any video;
+// the real size follows after the first frame. During a feed switch the order
+// is the other way round: mpv knows the new size while the window still has
+// the last feed's, and judging one against the other looks like a resize by
+// hand.
+//
+// So: while a feed is opening, a size is only remembered; once it is showing,
+// a size is the window's size and counts immediately.
+struct FeedSize: Equatable {
+    private(set) var toJudge: CGSize?    // nil means judge nothing
+    private var announced: CGSize?
+    private var opening = true
+
+    // A feed started opening: the window still belongs to the last one.
+    mutating func opens() {
+        toJudge = nil
+        announced = nil
+        opening = true
+    }
+
+    // mpv announced the size of the feed.
+    mutating func sized(_ size: CGSize) {
+        announced = size
+        if !opening { toJudge = size }
+    }
+
+    // Its first frame is up, so the window has been sized for it.
+    mutating func showing() {
+        opening = false
+        toJudge = announced
+    }
+}

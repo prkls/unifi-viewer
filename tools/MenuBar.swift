@@ -183,8 +183,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     var feeds: [Feed] = []            // what view.sh wrote for this session
     var playing: Int?                 // the feed showing, by its number
     var sessionScale: Double?         // the scale the window is at, nil for mpv's own
-    var sessionVideo: CGSize?         // the size of the feed showing; nil while one opens
-    var pendingVideo: CGSize?         // its size as mpv announced it, before the window changed
+    var feedSize = FeedSize()         // the size to judge a resize against
     var lastSeen: (frame: CGRect, screen: Screen)?  // for the final save, once it has gone
     var mouseUpMonitor: Any?          // a look at the end of every drag or resize
     var rightClickMonitor: Any?       // the viewer's own menu
@@ -340,7 +339,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
 
         writePlacementFile(screen?.name, placement)
         sessionScale = placement.scale
-        sessionVideo = nil
+        feedSize = FeedSize()
         lastSeen = nil
         feeds = loadFeeds()
         playing = nil
@@ -580,12 +579,17 @@ final class MenuBar: NSObject, NSApplicationDelegate {
             case "path":
                 feedStarted(url: value.text)
             case "video-params":
-                // Only noted here. mpv knows a feed's size before it has
-                // resized the window for it, and judging the old window
-                // against the new size called that a resize by hand.
-                if case .size(let width, let height) = value {
-                    pendingVideo = CGSize(width: width, height: height)
-                }
+                // While a feed is opening this is only noted: mpv knows its
+                // size before it has resized the window for it, and judging
+                // the old window against the new size called that a resize by
+                // hand. Once the feed is showing, a size is the window's size
+                // and can be used at once — mpv sends this property empty when
+                // it is first watched and fills it in after the first frame,
+                // so waiting for the frame alone missed it and nothing was
+                // ever judged.
+                guard case .size(let width, let height) = value else { break }
+                feedSize.sized(CGSize(width: width, height: height))
+                record("feed size: \(width)x\(height)")
             default:
                 break
             }
@@ -599,12 +603,12 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         case .other(let event):
             switch event {
             case "playback-restart":
+                feedSize.showing()
                 // Frames are arriving, so the window is now sized for this
                 // feed: its size can be judged against again. The panel has
                 // done its job, and so has the position mpv was started at —
                 // clearing that stops mpv putting a window you have moved back
                 // where it opened.
-                sessionVideo = pendingVideo
                 hideLoading()
                 if !placedOnce {
                     placedOnce = true
@@ -650,8 +654,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
         }
         // The window keeps the last feed's size until this one shows, so there
         // is nothing to judge a resize against in the meantime.
-        sessionVideo = nil
-        pendingVideo = nil
+        feedSize.opens()
         showLoading(feed.name)
     }
 
@@ -674,7 +677,9 @@ final class MenuBar: NSObject, NSApplicationDelegate {
     // --- the "Loading" panel ---------------------------------------------------
 
     func showLoading(_ name: String) {
-        let size = sessionVideo ?? CGSize(width: 1920, height: 1080)
+        // Drawn in the coordinates of whatever is on screen, falling back to
+        // a sensible frame before any feed has shown.
+        let size = feedSize.toJudge ?? CGSize(width: 1920, height: 1080)
         let ass = loadingOverlay(feed: name, width: Int(size.width), height: Int(size.height))
         mpv?.send(["osd-overlay", 1, "ass-events", ass, Int(size.width), Int(size.height), 0, false, false])
         loadingShown = true
@@ -777,7 +782,7 @@ final class MenuBar: NSObject, NSApplicationDelegate {
                              visible: screen.visible, backing: screen.backing)
             // Nothing to judge a size against while a feed is still opening:
             // the window keeps the last feed's size until the new one shows.
-            if let video = sessionVideo {
+            if let video = feedSize.toJudge {
                 resizedTo = resizedScale(window: frame, video: video, scale: sessionScale,
                                          visible: screen.visible, backing: screen.backing)
             }

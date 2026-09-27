@@ -408,6 +408,31 @@ enum MenuBarLogicTests {
                  resizedScale(window: CGRect(x: 1590, y: 2062, width: 629, height: 177), video: driveway,
                               scale: 0.1638, visible: builtinVisible, backing: 2))
 
+        // --- FeedSize ------------------------------------------------------------
+
+        // Measured order at startup: mpv sends the property empty when it is
+        // first watched, the first frame plays, and the real size follows.
+        var size = FeedSize()
+        assertEq("nothing to judge against yet", nil, size.toJudge)
+        size.showing()
+        assertEq("first frame, no size announced yet: still nothing", nil, size.toJudge)
+        size.sized(CGSize(width: 7680, height: 2160))
+        assertEq("the size arrives after the frame and counts at once",
+                 CGSize(width: 7680, height: 2160), size.toJudge)
+
+        // Measured order on a feed switch: the size comes first, while the
+        // window still has the last feed's.
+        var switching = FeedSize()
+        switching.showing()
+        switching.sized(CGSize(width: 7680, height: 2160))
+        switching.opens()
+        assertEq("a feed opening: judge nothing", nil, switching.toJudge)
+        switching.sized(CGSize(width: 1920, height: 2560))
+        assertEq("its size announced while it opens: still judge nothing", nil, switching.toJudge)
+        switching.showing()
+        assertEq("once it is showing, judge against it",
+                 CGSize(width: 1920, height: 2560), switching.toJudge)
+
         // --- track --------------------------------------------------------------
 
         let here = CGPoint(x: 1942, y: 0)
