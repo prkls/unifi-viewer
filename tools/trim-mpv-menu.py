@@ -18,11 +18,48 @@ the source published with every release.
 """
 import re
 import sys
+from datetime import date
 
-MENUS_TO_DROP = ["audio", "subtitle", "playback"]
+MENUS_TO_DROP = ["audio", "subtitle", "playback", "video"]
+
+# GPLv2 section 2(a): a modified file must carry a prominent notice saying it
+# was changed, and when. mpv is GPL software, so this goes at the top of every
+# file this script touches.
+NOTICE_MARK = "Modified for UniFi Viewer"
+NOTICE = """\
+// {mark} on {when} by tools/trim-mpv-menu.py.
+// Changed: removed the Audio, Subtitle, Playback and Video menus, which do
+// nothing for a live video-only camera feed, and pointed the Help menu at
+// UniFi Viewer instead of mpv. The unmodified source of this file is published
+// with every UniFi Viewer release.
+
+"""
+
+# mpv's Help menu sends people to mpv for help with an app that is not mpv.
+HELP_OLD = """\
+            Config(name: "mpv Website…", action: #selector(url(_:)), target: self, url: "https://mpv.io"),
+            Config(name: "mpv on GitHub…", action: #selector(url(_:)), target: self, url: "https://github.com/mpv-player/mpv"),
+            Config(type: .separator),
+            Config(name: "Online Manual…", action: #selector(url(_:)), target: self, url: "https://mpv.io/manual/master/"),
+            Config(name: "Online Wiki…", action: #selector(url(_:)), target: self, url: "https://github.com/mpv-player/mpv/wiki"),
+            Config(name: "Release Notes…", action: #selector(url(_:)), target: self, url: "https://github.com/mpv-player/mpv/blob/master/RELEASE_NOTES"),
+            Config(name: "Keyboard Shortcuts…", action: #selector(url(_:)), target: self, url: "https://github.com/mpv-player/mpv/blob/master/etc/input.conf"),
+            Config(type: .separator),
+            Config(name: "Report Issue…", action: #selector(url(_:)), target: self, url: "https://github.com/mpv-player/mpv/issues/new/choose")
+"""
+
+HELP_NEW = """\
+            Config(name: "UniFi Viewer Website…", action: #selector(url(_:)), target: self, url: "https://prkls.github.io/unifi-viewer"),
+            Config(name: "UniFi Viewer on GitHub…", action: #selector(url(_:)), target: self, url: "https://github.com/prkls/unifi-viewer"),
+            Config(type: .separator),
+            Config(name: "Report Issue…", action: #selector(url(_:)), target: self, url: "https://github.com/prkls/unifi-viewer/issues/new"),
+            Config(type: .separator),
+            Config(name: "Built with mpv…", action: #selector(url(_:)), target: self, url: "https://mpv.io")
+"""
 
 # The Video menu's zoom items, with the separator that follows them, as one
-# block: a separator line on its own appears a dozen times in this file.
+# block: a separator line on its own appears a dozen times in this file. Only
+# needed if the Video menu itself is kept; dropping the menu takes them along.
 ZOOM_BLOCK = """\
             Config(name: "Zoom Out", action: #selector(command(_:)), target: self, command: "add panscan -0.1"),
             Config(name: "Zoom In", action: #selector(command(_:)), target: self, command: "add panscan 0.1"),
@@ -75,6 +112,13 @@ def main():
         if gone:
             changed.append(name.capitalize())
 
+    helps = text.count(HELP_OLD)
+    if helps > 1:
+        sys.exit(f"trim-mpv-menu.py: the help menu appears {helps} times, expected one")
+    if helps == 1:
+        text = text.replace(HELP_OLD, HELP_NEW)
+        changed.append("Help menu pointed at UniFi Viewer")
+
     zooms = text.count(ZOOM_BLOCK)
     if zooms > 1:
         sys.exit(f"trim-mpv-menu.py: the zoom block appears {zooms} times, expected one")
@@ -94,8 +138,11 @@ def main():
     if re.search(r"Config\(type: \.separator\),\s*\n\s*Config\(type: \.separator\),", text):
         sys.exit("trim-mpv-menu.py: the edits left two separators together")
 
+    if NOTICE_MARK not in text:
+        text = NOTICE.format(mark=NOTICE_MARK, when=date.today().isoformat()) + text
+
     open(path, "w").write(text)
-    print("trimmed mpv's menus: dropped " + ", ".join(dict.fromkeys(changed)))
+    print("trimmed mpv's menus: " + ", ".join(dict.fromkeys(changed)))
 
 
 if __name__ == "__main__":
