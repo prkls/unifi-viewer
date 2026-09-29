@@ -15,6 +15,10 @@
 #   - Less to ship and to keep patched. Homebrew's mpv pulls 73 packages; this
 #     links 10 libraries. Every one shipped is one to rebuild when it has a
 #     security fix.
+#   - No Now Playing. mpv reports itself to macOS as a playing media app, even
+#     with --no-audio and --input-media-keys=no, and macOS then pulls AirPods
+#     over from an iPhone that is playing something. See macos-media-player
+#     below.
 #
 # Vulkan stays. Measured on this app's 7680x2160 feed: with Vulkan, mpv renders
 # through gpu-next at about 14% of a core, the same as Homebrew's build; without
@@ -73,31 +77,55 @@ python3 "$REPO/tools/mpv-menus.py" "$SOURCE"
 # --- configure ------------------------------------------------------------
 # Everything this app does not use is off. mpv's own hard dependencies are
 # FFmpeg, libass and libplacebo, so those are not choices.
-if [ ! -d "$SOURCE/build" ]; then
-    echo "configuring..."
-    ( cd "$SOURCE" && meson setup build \
-        -Dlua=disabled \
-        -Djavascript=disabled \
-        -Dlibarchive=disabled \
-        -Dlibbluray=disabled \
-        -Duchardet=disabled \
-        -Drubberband=disabled \
-        -Dvapoursynth=disabled \
-        -Dzimg=disabled \
-        -Djpeg=disabled \
-        -Dlcms2=disabled \
-        -Dvulkan=enabled \
-        -Dlibmpv=false \
-        -Dmanpage-build=disabled \
-        -Dhtml-build=disabled \
-        -Dtests=false >/dev/null )
+#
+# macos-media-player is mpv's Now Playing support. With it built in, mpv tells
+# macOS "mpv is playing" as soon as a feed opens, whatever the options say:
+# --input-media-keys=no only stops it taking the media keys, and the Now
+# Playing updates carry on. macOS treats a playing app as wanting the shared
+# Bluetooth audio route, so AirPods in use on an iPhone switch to the Mac. The
+# system log shows the chain: mediaremoted "isPlaying changed to true", then
+# audiomxd "request for ownership on shared route ... mpv", then
+# audioaccessoryd "Routing request ... Hijack ... app mpv".
+#
+# An existing build folder is reconfigured, so a changed option here takes
+# effect without --clean.
+if [ -d "$SOURCE/build" ]; then
+    reconfigure=--reconfigure
+else
+    reconfigure=""
 fi
+echo "configuring..."
+( cd "$SOURCE" && meson setup $reconfigure build \
+    -Dlua=disabled \
+    -Djavascript=disabled \
+    -Dlibarchive=disabled \
+    -Dlibbluray=disabled \
+    -Duchardet=disabled \
+    -Drubberband=disabled \
+    -Dvapoursynth=disabled \
+    -Dzimg=disabled \
+    -Djpeg=disabled \
+    -Dlcms2=disabled \
+    -Dmacos-media-player=disabled \
+    -Dvulkan=enabled \
+    -Dlibmpv=false \
+    -Dmanpage-build=disabled \
+    -Dhtml-build=disabled \
+    -Dtests=false >/dev/null )
 
 echo "building mpv..."
 ninja -C "$SOURCE/build" >/dev/null
 
 MPV="$SOURCE/build/mpv"
 [ -x "$MPV" ] || { echo "build-mpv.sh: no mpv came out of the build" >&2; exit 1; }
+
+# The option above is what keeps AirPods where they are. A later mpv that
+# renames it would quietly bring Now Playing back, so check the result.
+if "$MPV" -v --version 2>&1 | grep 'List of enabled features' | grep -q ' macos-media-player'; then
+    echo "build-mpv.sh: this mpv still has Now Playing (macos-media-player)" >&2
+    echo "  it would pull AirPods over from an iPhone; see the configure step" >&2
+    exit 1
+fi
 
 echo "built $MPV"
 echo "  $("$MPV" --version | head -1)"

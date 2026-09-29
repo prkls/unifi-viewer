@@ -202,6 +202,10 @@ cameras.
   real cost of a large feed is network bandwidth.
 - **Audio is off** (`--no-audio`). Protect 2.0 changed the camera audio sample rate in a way
   that breaks ffmpeg.
+- **The viewer does not show up as Now Playing.** mpv reports itself to macOS as a playing
+  media app even with no audio, and macOS then switches AirPods in use on an iPhone over to
+  the Mac. The app's own mpv is built without that part (`-Dmacos-media-player=disabled` in
+  `tools/build-mpv.sh`). An app built on Homebrew's mpv still has it.
 - **Switching feeds dims the picture** and names the incoming feed until frames arrive. The
   stream setup takes a few seconds, and without the panel the window looks frozen. It also
   shows during a reconnect.
