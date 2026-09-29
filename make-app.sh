@@ -159,7 +159,7 @@ fi
 BUILD_VERSION=$(date +%Y%m%d%H%M%S)
 # The version Finder's Get Info shows, and what a release is tagged with. The
 # About box shows mpv's version, not this one. Bumped per release.
-APP_VERSION=1.0.1
+APP_VERSION=1.0.2
 # LSUIElement keeps the menu bar button (or the plain launcher) out of the
 # Dock. mpv creates its own NSApplication and its own Dock tile, so without it
 # you get two icons for one window. The tile you see and Cmd+Tab to is mpv's,
